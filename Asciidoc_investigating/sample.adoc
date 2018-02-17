@@ -1,0 +1,39 @@
+= はじめての AsciiDoc ドキュメント
+
+これは AsciiDoc で書かれたドキュメントです。
+
+== セクション
+
+``=`` から始まる行はセクションの見出しになります。 +
+``==``, ``===``, ... のように `=` を重ねるとレベルが1つ下がります。
+
+== テーブル（表）
+
+.テーブル見出し
+
+|=======================
+|Col 1|Col 2      |Col 3
+|1    |Item 1     |a
+|2    |Item 2     |b
+|3    |Item 3     |c
+|=======================
+
+CSV 形式で書くこともできます。
+
+[format="csv"]
+|======
+1,2,3,4
+a,b,c,d
+A,B,C,D
+|======
+
+== ソースコード
+
+[source, javascript]
+----
+export default class MyComponent extends React.Component {
+    render() {
+        <div>Hello, World!</div>
+    }
+}
+----
