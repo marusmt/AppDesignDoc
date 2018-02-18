@@ -36,7 +36,7 @@ Asciidoctor PDF 1.5.0.alpha.16をインストール
 
 macOS Hight Sierra 10.13.3
 
-``` shell
+``` 
 ruby 2.3.3p222 (2016-11-21 revision 56859) [universal.x86_64-darwin17]
 ~ : $ gem list
 
