@@ -36,7 +36,7 @@ Asciidoctor PDF 1.5.0.alpha.16をインストール
 
 macOS Hight Sierra 10.13.3
 
-``` 
+```
 ruby 2.3.3p222 (2016-11-21 revision 56859) [universal.x86_64-darwin17]
 ~ : $ gem list
 
@@ -103,7 +103,7 @@ export PATH="$HOME/.rbenv/shims:$PATH"
 ```
 パス設定していないとrbenvでインストールしたrubyのパスが通らない。
 
-インストールしたversionがあるかを確認する
+インストールしたversionがあるかを確認する。
 
 ```
 ~ : $ rbenv versions
@@ -119,9 +119,9 @@ systemは最初からインストールされているRuby
 ~ : $ ruby -v
 ruby 2.5.0p0 (2017-12-25 revision 61468) [x86_64-darwin17]
 ```
-globalにするとシステム全体に適用される
-localを指定すると一部の的用となる
-元々インストールしているバージョンに戻す場合はrbenvでsystemを指定する
+globalにするとシステム全体に適用される。  
+localを指定すると一部の適用となる。（そのユーザだけ？）  
+元々インストールしているバージョンに戻す場合はrbenvでsystemを指定する。
 
 ```
 rbenv global system
