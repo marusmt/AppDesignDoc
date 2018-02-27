@@ -1,7 +1,8 @@
 # Asciidoc導入メモ
 
-作成：2018/2/17 丸山利和
-
+作成：Toshikazu Maruyama(marusmt@me.com)
+作成：2018/2/17 
+更新：2018/2/27
 Rubyは導入済の状態
 * ruby 2.4.3p205 (2017-12-14 revision 61247) [x64-mingw32]
 * gem 2.6.14
@@ -93,7 +94,7 @@ Available versions:
 2.5.0をインストールしてみる
 
 ```
-~ : $ rbenv install 2.6.0
+~ : $ rbenv install 2.5.0
 ```
 
 .bash_profileにパスを追加する。
