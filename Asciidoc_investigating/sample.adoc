@@ -1,3 +1,4 @@
+:source-highlighter: coderay
 = はじめての AsciiDoc ドキュメント
 
 これは AsciiDoc で書かれたドキュメントです。
