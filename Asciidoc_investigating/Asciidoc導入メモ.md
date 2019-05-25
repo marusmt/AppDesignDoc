@@ -1,6 +1,6 @@
 # Asciidoc導入メモ
 
-作成：Toshikazu MARUYAMA(marusmt@me.com)
+作成：Toshikazu MARUYAMA
 作成：2018/2/17
 更新：2019/5/19
 Rubyは導入済の状態
