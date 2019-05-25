@@ -1,8 +1,8 @@
 # Asciidoc導入メモ
 
-作成：丸山利和(marusmt@me.com)
+作成：Toshikazu MARUYAMA(marusmt@me.com)
 作成：2018/2/17
-更新：2019/5/12
+更新：2019/5/19
 Rubyは導入済の状態
 * ruby 2.4.3p205 (2017-12-14 revision 61247) [x64-mingw32]
 * gem 2.6.14
