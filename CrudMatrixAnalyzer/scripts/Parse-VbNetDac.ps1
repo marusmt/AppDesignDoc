@@ -138,11 +138,22 @@ function ConvertFrom-VbNetDacFile {
         $sqlStrings = Get-VbNetSqlStrings -Content $method.Content
         $featureName = "VB:$($classInfo.ClassName).$($method.Name)"
 
+        $methodCteNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($sqlForCte in $sqlStrings) {
+            if ($sqlForCte -match '(?i)\bWITH\b') {
+                $cteFound = [regex]::Matches($sqlForCte, '(?i)([\w$]+)\s+AS\s*\(')
+                foreach ($cf in $cteFound) {
+                    [void]$methodCteNames.Add($cf.Groups[1].Value.ToUpper())
+                }
+            }
+        }
+
         foreach ($sql in $sqlStrings) {
             foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
                 $extracted = Get-TableAndColumns -SqlFragment $sql -OperationType $opType
 
                 foreach ($item in $extracted) {
+                    if ($methodCteNames.Count -gt 0 -and $methodCteNames.Contains($item.TableName)) { continue }
                     [void]$results.Add(@{
                         SourceType  = "VB.NET"
                         SourceFile  = $fileName

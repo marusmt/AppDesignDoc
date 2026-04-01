@@ -100,12 +100,21 @@ function Get-TableAndColumns {
 
     $results = [System.Collections.ArrayList]::new()
 
+    $cteNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    if ($SqlFragment -match '(?i)\bWITH\b') {
+        $cteMatches = [regex]::Matches($SqlFragment, '(?i)([\w$]+)\s+AS\s*\(')
+        foreach ($cm in $cteMatches) {
+            [void]$cteNames.Add($cm.Groups[1].Value.ToUpper())
+        }
+    }
+
     switch ($OperationType) {
         "INSERT" {
-            $pattern = '(?i)INSERT\s+INTO\s+(?:(\w+)\.)?(\w+)\s*\(([^)]+)\)'
+            $pattern = '(?i)INSERT\s+INTO\s+(?:([\w$]+)\.)?([\w$]+)\s*\(([^)]+)\)'
             $m = [regex]::Matches($SqlFragment, $pattern)
             foreach ($match in $m) {
                 $tableName = $match.Groups[2].Value.ToUpper()
+                if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
                 $columnsRaw = $match.Groups[3].Value
                 $columns = ($columnsRaw -split ',') | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ -ne '' }
                 foreach ($col in $columns) {
@@ -118,14 +127,6 @@ function Get-TableAndColumns {
             }
         }
         "SELECT" {
-            $cteNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-            if ($SqlFragment -match '(?i)\bWITH\b') {
-                $cteMatches = [regex]::Matches($SqlFragment, '(?i)(\w+)\s+AS\s*\(')
-                foreach ($cm in $cteMatches) {
-                    [void]$cteNames.Add($cm.Groups[1].Value.ToUpper())
-                }
-            }
-
             $selectMatches = [regex]::Matches($SqlFragment, '(?i)\bSELECT\b')
             foreach ($sm in $selectMatches) {
                 $depth = 0
@@ -229,10 +230,11 @@ function Get-TableAndColumns {
             }
         }
         "UPDATE" {
-            $pattern = '(?i)UPDATE\s+(?:(\w+)\.)?(\w+)\s+SET\s+([\s\S]+?)(?:\s+WHERE\b|\s*;|\s*$)'
+            $pattern = '(?i)UPDATE\s+(?:([\w$]+)\.)?([\w$]+)\s+SET\s+([\s\S]+?)(?:\s+WHERE\b|\s*;|\s*$)'
             $m = [regex]::Matches($SqlFragment, $pattern)
             foreach ($match in $m) {
                 $tableName = $match.Groups[2].Value.ToUpper()
+                if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
                 $setClause = $match.Groups[3].Value
                 $columns = Get-SetColumns -SetClause $setClause
 
@@ -246,10 +248,11 @@ function Get-TableAndColumns {
             }
         }
         "DELETE" {
-            $pattern = '(?i)DELETE\s+FROM\s+(?:(\w+)\.)?(\w+)'
+            $pattern = '(?i)DELETE\s+FROM\s+(?:([\w$]+)\.)?([\w$]+)'
             $m = [regex]::Matches($SqlFragment, $pattern)
             foreach ($match in $m) {
                 $tableName = $match.Groups[2].Value.ToUpper()
+                if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
                 [void]$results.Add(@{
                     TableName  = $tableName
                     ColumnName = "(ALL)"
@@ -258,10 +261,11 @@ function Get-TableAndColumns {
             }
         }
         "MERGE" {
-            $pattern = '(?i)MERGE\s+INTO\s+(?:(\w+)\.)?(\w+)'
+            $pattern = '(?i)MERGE\s+INTO\s+(?:([\w$]+)\.)?([\w$]+)'
             $m = [regex]::Matches($SqlFragment, $pattern)
             foreach ($match in $m) {
                 $tableName = $match.Groups[2].Value.ToUpper()
+                if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
                 [void]$results.Add(@{
                     TableName  = $tableName
                     ColumnName = "(ALL)"
@@ -368,7 +372,7 @@ function Get-FromTables {
         $trimmed = $trimmed.Trim()
         if ($trimmed -eq '') { continue }
 
-        if ($trimmed -match '(?:(\w+)\.)?(\w+)(?:\s+(\w+))?') {
+        if ($trimmed -match '(?:([\w$]+)\.)?([\w$]+)(?:\s+([\w$]+))?') {
             $tblName = $Matches[2].ToUpper()
             $isKeyword = $tblName -in $sqlKeywords
             $isNumber = $tblName -match '^\d+$'
