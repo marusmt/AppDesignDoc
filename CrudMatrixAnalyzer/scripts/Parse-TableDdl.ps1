@@ -1,0 +1,347 @@
+<#
+.SYNOPSIS
+    Oracle テーブル定義（DDL）・インデックス定義を解析する
+
+.DESCRIPTION
+    CREATE TABLE / CREATE INDEX 文を含む .sql ファイルを読み込み、
+    テーブル名・カラム名・データ型・制約・インデックス情報を抽出する
+    解析結果は SELECT * 展開やCRUDマトリックスの補完に利用する
+#>
+
+function Remove-SqlCommentsForDdl {
+    param([string]$Content)
+
+    $result = $Content -replace '--[^\r\n]*', ''
+    $result = $result -replace '/\*[\s\S]*?\*/', ''
+    return $result
+}
+
+function Parse-CreateTable {
+    param([string]$Content)
+
+    $results = [System.Collections.ArrayList]::new()
+    $cleaned = Remove-SqlCommentsForDdl -Content $Content
+
+    $tablePattern = '(?i)CREATE\s+TABLE\s+(?:(\w+)\.)?(\w+)\s*\(([\s\S]+?)\)\s*(?:TABLESPACE|PCTFREE|STORAGE|LOB|PARTITION|;|\s*$)'
+    $tableMatches = [regex]::Matches($cleaned, $tablePattern)
+
+    foreach ($match in $tableMatches) {
+        $schema = if ($match.Groups[1].Success) { $match.Groups[1].Value.ToUpper() } else { "" }
+        $tableName = $match.Groups[2].Value.ToUpper()
+        $body = $match.Groups[3].Value
+
+        $columns = Extract-ColumnDefinitions -TableBody $body -TableName $tableName -Schema $schema
+
+        foreach ($col in $columns) {
+            [void]$results.Add($col)
+        }
+    }
+
+    return $results
+}
+
+function Extract-ColumnDefinitions {
+    param([string]$TableBody, [string]$TableName, [string]$Schema)
+
+    $columns = [System.Collections.ArrayList]::new()
+
+    $depth = 0
+    $current = ""
+    $parts = [System.Collections.ArrayList]::new()
+
+    foreach ($char in $TableBody.ToCharArray()) {
+        if ($char -eq '(') { $depth++ }
+        elseif ($char -eq ')') { $depth-- }
+
+        if ($char -eq ',' -and $depth -eq 0) {
+            [void]$parts.Add($current.Trim())
+            $current = ""
+        }
+        else {
+            $current += $char
+        }
+    }
+    if ($current.Trim() -ne '') { [void]$parts.Add($current.Trim()) }
+
+    $ordinalPos = 0
+    foreach ($part in $parts) {
+        $trimmed = $part.Trim()
+
+        if ($trimmed -match '(?i)^\s*CONSTRAINT\b') { continue }
+        if ($trimmed -match '(?i)^\s*PRIMARY\s+KEY\b') { continue }
+        if ($trimmed -match '(?i)^\s*FOREIGN\s+KEY\b') { continue }
+        if ($trimmed -match '(?i)^\s*UNIQUE\b') { continue }
+        if ($trimmed -match '(?i)^\s*CHECK\b') { continue }
+        if ($trimmed -match '(?i)^\s*SUPPLEMENTAL\b') { continue }
+
+        if ($trimmed -match '(?i)^\s*"?(\w+)"?\s+(VARCHAR2|NVARCHAR2|CHAR|NCHAR|NUMBER|INTEGER|FLOAT|DATE|TIMESTAMP|CLOB|NCLOB|BLOB|RAW|LONG|XMLTYPE|ROWID|BINARY_FLOAT|BINARY_DOUBLE|INTERVAL)') {
+            $ordinalPos++
+            $colName = $Matches[1].ToUpper()
+            $dataType = $Matches[2].ToUpper()
+
+            $fullType = $dataType
+            if ($trimmed -match "(?i)$dataType\s*\(([^)]+)\)") {
+                $fullType = "$dataType($($Matches[1]))"
+            }
+
+            $nullable = if ($trimmed -match '(?i)\bNOT\s+NULL\b') { "NOT NULL" } else { "NULL" }
+            $hasDefault = if ($trimmed -match '(?i)\bDEFAULT\b') { "YES" } else { "NO" }
+
+            [void]$columns.Add(@{
+                Schema      = $Schema
+                TableName   = $TableName
+                ColumnName  = $colName
+                DataType    = $fullType
+                Nullable    = $nullable
+                HasDefault  = $hasDefault
+                OrdinalPos  = $ordinalPos
+            })
+        }
+    }
+
+    return $columns
+}
+
+function Parse-CreateIndex {
+    param([string]$Content)
+
+    $results = [System.Collections.ArrayList]::new()
+    $cleaned = Remove-SqlCommentsForDdl -Content $Content
+
+    $indexPattern = '(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+(?:(\w+)\.)?(\w+)\s+ON\s+(?:(\w+)\.)?(\w+)\s*\(([^)]+)\)'
+    $indexMatches = [regex]::Matches($cleaned, $indexPattern)
+
+    foreach ($match in $indexMatches) {
+        $isUnique = if ($match.Groups[1].Success) { "UNIQUE" } else { "NONUNIQUE" }
+        $indexSchema = if ($match.Groups[2].Success) { $match.Groups[2].Value.ToUpper() } else { "" }
+        $indexName = $match.Groups[3].Value.ToUpper()
+        $tableSchema = if ($match.Groups[4].Success) { $match.Groups[4].Value.ToUpper() } else { "" }
+        $tableName = $match.Groups[5].Value.ToUpper()
+        $columnsRaw = $match.Groups[6].Value
+
+        $columns = ($columnsRaw -split ',') | ForEach-Object {
+            $col = $_.Trim().ToUpper()
+            $col = $col -replace '\s+(ASC|DESC)\s*$', ''
+            $col
+        } | Where-Object { $_ -ne '' }
+
+        $colPos = 0
+        foreach ($col in $columns) {
+            $colPos++
+            [void]$results.Add(@{
+                IndexSchema = $indexSchema
+                IndexName   = $indexName
+                TableSchema = $tableSchema
+                TableName   = $tableName
+                ColumnName  = $col
+                ColumnPos   = $colPos
+                Uniqueness  = $isUnique
+            })
+        }
+    }
+
+    return $results
+}
+
+function Parse-TableDdlDirectory {
+    param(
+        [string]$SourcePath,
+        [string]$FilePattern = "*.sql",
+        [string[]]$ExcludePatterns = @(),
+        [string[]]$ExcludeTables = @()
+    )
+
+    Write-Host "[DDL] テーブル定義解析開始: $SourcePath" -ForegroundColor Cyan
+
+    $files = Get-ChildItem -Path $SourcePath -Filter $FilePattern -Recurse -File
+    foreach ($pattern in $ExcludePatterns) {
+        $files = $files | Where-Object { $_.Name -notlike $pattern }
+    }
+
+    Write-Host "[DDL] 対象ファイル数: $($files.Count)" -ForegroundColor Cyan
+
+    $allTableDefs = [System.Collections.ArrayList]::new()
+    $allIndexDefs = [System.Collections.ArrayList]::new()
+    $fileCount = 0
+
+    foreach ($file in $files) {
+        $fileCount++
+        Write-Progress -Activity "DDL 解析中" -Status "$fileCount / $($files.Count): $($file.Name)" -PercentComplete (($fileCount / $files.Count) * 100)
+
+        try {
+            $content = Get-Content $file.FullName -Raw -Encoding Default
+
+            $tableDefs = Parse-CreateTable -Content $content
+            foreach ($def in $tableDefs) {
+                if ($def.TableName -notin $ExcludeTables) {
+                    $def.SourceFile = $file.Name
+                    [void]$allTableDefs.Add($def)
+                }
+            }
+
+            $indexDefs = Parse-CreateIndex -Content $content
+            foreach ($def in $indexDefs) {
+                if ($def.TableName -notin $ExcludeTables) {
+                    $def.SourceFile = $file.Name
+                    [void]$allIndexDefs.Add($def)
+                }
+            }
+        }
+        catch {
+            Write-Warning "[DDL] 解析エラー: $($file.FullName) - $($_.Exception.Message)"
+        }
+    }
+
+    Write-Progress -Activity "DDL 解析中" -Completed
+
+    $tableCount = ($allTableDefs | ForEach-Object { $_.TableName } | Sort-Object -Unique).Count
+    $columnCount = $allTableDefs.Count
+    $indexCount = ($allIndexDefs | ForEach-Object { $_.IndexName } | Sort-Object -Unique).Count
+
+    Write-Host "[DDL] 解析完了: テーブル $tableCount 件, カラム $columnCount 件, インデックス $indexCount 件" -ForegroundColor Green
+
+    return @{
+        TableDefinitions = $allTableDefs
+        IndexDefinitions = $allIndexDefs
+    }
+}
+
+function Expand-SelectStar {
+    param(
+        [System.Collections.ArrayList]$CrudResults,
+        [System.Collections.ArrayList]$TableDefinitions
+    )
+
+    $expanded = [System.Collections.ArrayList]::new()
+    $expandedCount = 0
+
+    foreach ($item in $CrudResults) {
+        if ($item.ColumnName -eq "*" -and $item.Operation -eq "R") {
+            $tableCols = $TableDefinitions | Where-Object { $_.TableName -eq $item.TableName }
+
+            if ($tableCols.Count -gt 0) {
+                $expandedCount++
+                foreach ($col in $tableCols) {
+                    [void]$expanded.Add(@{
+                        SourceType  = $item.SourceType
+                        SourceFile  = $item.SourceFile
+                        ObjectType  = $item.ObjectType
+                        ObjectName  = $item.ObjectName
+                        ProcName    = $item.ProcName
+                        FeatureName = $item.FeatureName
+                        TableName   = $item.TableName
+                        ColumnName  = $col.ColumnName
+                        Operation   = "R"
+                    })
+                }
+            }
+            else {
+                [void]$expanded.Add($item)
+            }
+        }
+        else {
+            [void]$expanded.Add($item)
+        }
+    }
+
+    if ($expandedCount -gt 0) {
+        Write-Host "[DDL] SELECT * 展開: $expandedCount 箇所を個別カラムに展開" -ForegroundColor Green
+    }
+
+    return $expanded
+}
+
+function Test-ColumnExistence {
+    param(
+        [System.Collections.ArrayList]$CrudResults,
+        [System.Collections.ArrayList]$TableDefinitions
+    )
+
+    $ddlColumns = @{}
+    $ddlTables = @{}
+    foreach ($def in $TableDefinitions) {
+        $ddlTables[$def.TableName] = $true
+        $key = "$($def.TableName)|$($def.ColumnName)"
+        $ddlColumns[$key] = $true
+    }
+
+    $validated = [System.Collections.ArrayList]::new()
+    $removed = [System.Collections.ArrayList]::new()
+    $skipColumns = @('*', '(ALL)')
+
+    foreach ($item in $CrudResults) {
+        if ($item.ColumnName -in $skipColumns) {
+            [void]$validated.Add($item)
+            continue
+        }
+
+        if (-not $ddlTables.ContainsKey($item.TableName)) {
+            [void]$validated.Add($item)
+            continue
+        }
+
+        $key = "$($item.TableName)|$($item.ColumnName)"
+        if ($ddlColumns.ContainsKey($key)) {
+            [void]$validated.Add($item)
+        }
+        else {
+            [void]$removed.Add($item)
+        }
+    }
+
+    $removedCount = $removed.Count
+    if ($removedCount -gt 0) {
+        $removedTables = ($removed | ForEach-Object { $_.TableName } | Sort-Object -Unique).Count
+        Write-Host "[検証] DDL突合せ: $removedCount 件の不正エントリを除外（$removedTables テーブル）" -ForegroundColor Yellow
+
+        $removedGroups = $removed | Group-Object { "$($_.TableName)|$($_.ColumnName)" }
+        $displayLimit = [Math]::Min($removedGroups.Count, 20)
+        for ($i = 0; $i -lt $displayLimit; $i++) {
+            $grp = $removedGroups[$i]
+            $parts = $grp.Name -split '\|'
+            Write-Host "        除外: $($parts[0]).$($parts[1]) ($($grp.Count) 件)" -ForegroundColor DarkGray
+        }
+        if ($removedGroups.Count -gt 20) {
+            Write-Host "        ... 他 $($removedGroups.Count - 20) 件" -ForegroundColor DarkGray
+        }
+    }
+    else {
+        Write-Host "[検証] DDL突合せ: 不正エントリなし" -ForegroundColor Green
+    }
+
+    return @{
+        Validated = $validated
+        Removed   = $removed
+    }
+}
+
+function Find-UnusedColumns {
+    param(
+        [System.Collections.ArrayList]$TableDefinitions,
+        [System.Collections.ArrayList]$CrudResults
+    )
+
+    $usedColumns = @{}
+    foreach ($item in $CrudResults) {
+        $key = "$($item.TableName)|$($item.ColumnName)"
+        $usedColumns[$key] = $true
+    }
+
+    $unused = [System.Collections.ArrayList]::new()
+    foreach ($def in $TableDefinitions) {
+        $key = "$($def.TableName)|$($def.ColumnName)"
+        if (-not $usedColumns.ContainsKey($key)) {
+            [void]$unused.Add(@{
+                TableName  = $def.TableName
+                ColumnName = $def.ColumnName
+                DataType   = $def.DataType
+                Nullable   = $def.Nullable
+            })
+        }
+    }
+
+    $unusedTableCount = ($unused | ForEach-Object { $_.TableName } | Sort-Object -Unique).Count
+    Write-Host "[分析] 未使用カラム: $($unused.Count) 件（$unusedTableCount テーブル）" -ForegroundColor Yellow
+
+    return $unused
+}
