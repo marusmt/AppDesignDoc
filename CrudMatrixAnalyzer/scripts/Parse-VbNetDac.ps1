@@ -139,12 +139,12 @@ function ConvertFrom-VbNetDacFile {
         $featureName = "VB:$($classInfo.ClassName).$($method.Name)"
 
         $methodCteNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($sqlForCte in $sqlStrings) {
-            if ($sqlForCte -match '(?i)\bWITH\b') {
-                $cteFound = [regex]::Matches($sqlForCte, '(?i)([\w$]+)\s+AS\s*\(')
-                foreach ($cf in $cteFound) {
-                    [void]$methodCteNames.Add($cf.Groups[1].Value.ToUpper())
-                }
+        $allLiterals = [regex]::Matches($method.Content, '"([^"]*)"')
+        $allLiteralText = ($allLiterals | ForEach-Object { $_.Groups[1].Value }) -join " "
+        if ($allLiteralText -match '(?i)\bWITH\b') {
+            $cteFound = [regex]::Matches($allLiteralText, '(?i)([\w$]+)\s+AS\s*\(')
+            foreach ($cf in $cteFound) {
+                [void]$methodCteNames.Add($cf.Groups[1].Value.ToUpper())
             }
         }
 
