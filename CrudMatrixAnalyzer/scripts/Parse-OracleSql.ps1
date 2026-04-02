@@ -248,16 +248,24 @@ function Get-TableAndColumns {
             }
         }
         "DELETE" {
-            $pattern = '(?i)DELETE\s+FROM\s+(?:([\w$]+)\.)?([\w$]+)'
-            $m = [regex]::Matches($SqlFragment, $pattern)
-            foreach ($match in $m) {
-                $tableName = $match.Groups[2].Value.ToUpper()
-                if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
-                [void]$results.Add(@{
-                    TableName  = $tableName
-                    ColumnName = "(ALL)"
-                    Operation  = "D"
-                })
+            $pattern1 = '(?i)DELETE\s+FROM\s+(?:([\w$]+)\.)?([\w$]+)'
+            $pattern2 = '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s+WHERE\b'
+            $pattern3 = '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s*;'
+            
+            $deletedTables = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            foreach ($pat in @($pattern1, $pattern2, $pattern3)) {
+                $m = [regex]::Matches($SqlFragment, $pat)
+                foreach ($match in $m) {
+                    $tableName = $match.Groups[2].Value.ToUpper()
+                    if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
+                    if ($deletedTables.Contains($tableName)) { continue }
+                    [void]$deletedTables.Add($tableName)
+                    [void]$results.Add(@{
+                        TableName  = $tableName
+                        ColumnName = "(ALL)"
+                        Operation  = "D"
+                    })
+                }
             }
         }
         "MERGE" {

@@ -72,7 +72,8 @@ function Build-CrudSummaryMatrix {
             $header = $headerMap[$feature]
             $key = "$table|$feature"
             if ($lookup.ContainsKey($key)) {
-                $row[$header] = ($lookup[$key] | Sort-Object) -join ""
+                $ops = @($lookup[$key])
+                $row[$header] = ($ops | Sort-Object) -join ""
             }
             else {
                 $row[$header] = "-"
@@ -139,7 +140,8 @@ function Build-CrudDetailMatrix {
             $header = $headerMap[$feature]
             $key = "$pair|$feature"
             if ($lookup.ContainsKey($key)) {
-                $row[$header] = ($lookup[$key] | Sort-Object) -join ""
+                $ops = @($lookup[$key])
+                $row[$header] = ($ops | Sort-Object) -join ""
             }
             else {
                 $row[$header] = "-"
@@ -303,6 +305,19 @@ function Export-CrudExcelWithModule {
             $ws = $pkg.Workbook.Worksheets[$DetailSheetName]
             $ws.Row(1).Style.WrapText = $true
             $ws.Row(1).Style.VerticalAlignment = [OfficeOpenXml.Style.ExcelVerticalAlignment]::Top
+            $lastRow = $ws.Dimension.End.Row
+            $lastCol = $ws.Dimension.End.Column
+            if ($lastCol -ge 3) {
+                $dataRange = [OfficeOpenXml.ExcelAddress]::new(2, 3, $lastRow, $lastCol)
+                $cfC = $ws.ConditionalFormatting.AddContainsText($dataRange)
+                $cfC.Text = "C"; $cfC.Style.Fill.BackgroundColor.Color = [System.Drawing.Color]::LightGreen; $cfC.Style.Font.Color.Color = [System.Drawing.Color]::DarkGreen
+                $cfR = $ws.ConditionalFormatting.AddContainsText($dataRange)
+                $cfR.Text = "R"; $cfR.Style.Fill.BackgroundColor.Color = [System.Drawing.Color]::LightBlue; $cfR.Style.Font.Color.Color = [System.Drawing.Color]::DarkBlue
+                $cfU = $ws.ConditionalFormatting.AddContainsText($dataRange)
+                $cfU.Text = "U"; $cfU.Style.Fill.BackgroundColor.Color = [System.Drawing.Color]::LightGoldenrodYellow; $cfU.Style.Font.Color.Color = [System.Drawing.Color]::DarkGoldenrod
+                $cfD = $ws.ConditionalFormatting.AddContainsText($dataRange)
+                $cfD.Text = "D"; $cfD.Style.Fill.BackgroundColor.Color = [System.Drawing.Color]::LightCoral; $cfD.Style.Font.Color.Color = [System.Drawing.Color]::DarkRed
+            }
             $pkg.Save()
             $pkg.Dispose()
             $hasBaseSheet = $true
