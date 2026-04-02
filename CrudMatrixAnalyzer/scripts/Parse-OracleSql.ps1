@@ -96,6 +96,72 @@ function Get-ProcedureBlocks {
     return $blocks
 }
 
+function Get-DeleteCrudRows {
+    param(
+        [string]$SqlFragment,
+        [System.Collections.Generic.HashSet[string]]$CteNames
+    )
+
+    $out = [System.Collections.ArrayList]::new()
+    $seenTableNames = [System.Collections.ArrayList]::new()
+
+    $deleteKwMatches = [regex]::Matches($SqlFragment, '(?i)\bDELETE\b')
+    foreach ($dm in $deleteKwMatches) {
+        $i = $dm.Index + $dm.Length
+        $len = $SqlFragment.Length
+        while ($true) {
+            while ($i -lt $len -and [char]::IsWhiteSpace($SqlFragment[$i])) { $i++ }
+            if ($i + 1 -lt $len -and $SqlFragment[$i] -eq [char]0x2F -and $SqlFragment[$i + 1] -eq [char]0x2A) {
+                $close = $SqlFragment.IndexOf('*/', $i + 2, [System.StringComparison]::Ordinal)
+                if ($close -lt 0) { break }
+                $i = $close + 2
+                continue
+            }
+            break
+        }
+        if ($i -ge $len) { continue }
+        $tail = $SqlFragment.Substring($i)
+        $fromMatch = [regex]::Match($tail, '(?i)^FROM\b')
+        if (-not $fromMatch.Success) { continue }
+        $i = $i + $fromMatch.Length
+        if ($i -lt $len -and [char]::IsLetterOrDigit($SqlFragment[$i])) { continue }
+        while ($i -lt $len -and [char]::IsWhiteSpace($SqlFragment[$i])) { $i++ }
+        if ($i -ge $len) { continue }
+        $rest = $SqlFragment.Substring($i)
+        $idm = [regex]::Match($rest, '^(?:(?:([\w$]+)\.)?([\w$]+))')
+        if (-not $idm.Success) { continue }
+        $tableName = $idm.Groups[2].Value.ToUpper()
+        if ($tableName -eq '') { continue }
+        if ($CteNames.Count -gt 0 -and $CteNames.Contains($tableName)) { continue }
+        if ($seenTableNames -contains $tableName) { continue }
+        [void]$seenTableNames.Add($tableName)
+        [void]$out.Add(@{
+            TableName  = $tableName
+            ColumnName = "(ALL)"
+            Operation  = "D"
+        })
+    }
+
+    $pattern2 = '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s+WHERE\b'
+    $pattern3 = '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s*;'
+    foreach ($pat in @($pattern2, $pattern3)) {
+        $m = [regex]::Matches($SqlFragment, $pat)
+        foreach ($match in $m) {
+            $tableName = $match.Groups[2].Value.ToUpper()
+            if ($CteNames.Count -gt 0 -and $CteNames.Contains($tableName)) { continue }
+            if ($seenTableNames -contains $tableName) { continue }
+            [void]$seenTableNames.Add($tableName)
+            [void]$out.Add(@{
+                TableName  = $tableName
+                ColumnName = "(ALL)"
+                Operation  = "D"
+            })
+        }
+    }
+
+    return $out
+}
+
 function Get-TableAndColumns {
     param([string]$SqlFragment, [string]$OperationType)
 
@@ -251,49 +317,9 @@ function Get-TableAndColumns {
             }
         }
         "DELETE" {
-            $deletedTables = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-            $deleteKwMatches = [regex]::Matches($SqlFragment, '(?i)\bDELETE\b')
-            foreach ($dm in $deleteKwMatches) {
-                $i = $dm.Index + $dm.Length
-                $len = $SqlFragment.Length
-                while ($i -lt $len -and [char]::IsWhiteSpace($SqlFragment[$i])) { $i++ }
-                if ($i + 4 -gt $len) { continue }
-                if (-not ($SqlFragment.Substring($i, 4) -cmatch '(?i)^FROM\b')) { continue }
-                $afterFrom = $i + 4
-                if ($afterFrom -lt $len -and [char]::IsLetterOrDigit($SqlFragment[$afterFrom])) { continue }
-                $i = $afterFrom
-                while ($i -lt $len -and [char]::IsWhiteSpace($SqlFragment[$i])) { $i++ }
-                if ($i -ge $len) { continue }
-                $rest = $SqlFragment.Substring($i)
-                $idm = [regex]::Match($rest, '^(?:(?:([\w$]+)\.)?([\w$]+))')
-                if (-not $idm.Success) { continue }
-                $tableName = $idm.Groups[2].Value.ToUpper()
-                if ($tableName -eq '') { continue }
-                if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
-                if ($deletedTables.Contains($tableName)) { continue }
-                [void]$deletedTables.Add($tableName)
-                [void]$results.Add(@{
-                    TableName  = $tableName
-                    ColumnName = "(ALL)"
-                    Operation  = "D"
-                })
-            }
-
-            $pattern2 = '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s+WHERE\b'
-            $pattern3 = '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s*;'
-            foreach ($pat in @($pattern2, $pattern3)) {
-                $m = [regex]::Matches($SqlFragment, $pat)
-                foreach ($match in $m) {
-                    $tableName = $match.Groups[2].Value.ToUpper()
-                    if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
-                    if ($deletedTables.Contains($tableName)) { continue }
-                    [void]$deletedTables.Add($tableName)
-                    [void]$results.Add(@{
-                        TableName  = $tableName
-                        ColumnName = "(ALL)"
-                        Operation  = "D"
-                    })
-                }
+            $deleteRows = Get-DeleteCrudRows -SqlFragment $SqlFragment -CteNames $cteNames
+            foreach ($dr in $deleteRows) {
+                [void]$results.Add($dr)
             }
         }
         "MERGE" {
