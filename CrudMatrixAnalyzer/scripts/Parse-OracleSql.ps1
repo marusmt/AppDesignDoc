@@ -298,10 +298,10 @@ function Get-TableAndColumns {
                 if ($selectClause -eq '' -or $fromClause -eq '') { continue }
 
                 $tables = Get-FromTables -FromClause $fromClause -ExcludeNames $cteNames
-                $columns = Get-SelectColumns -SelectClause $selectClause
+                $refInfo = Get-SelectColumnRefs -SelectClause $selectClause
 
                 foreach ($table in $tables) {
-                    if ($columns.Count -eq 0 -or ($columns.Count -eq 1 -and $columns[0] -eq "*")) {
+                    if ($refInfo.StarOnly -or $refInfo.Refs.Count -eq 0) {
                         [void]$results.Add(@{
                             TableName  = $table
                             ColumnName = "*"
@@ -309,12 +309,31 @@ function Get-TableAndColumns {
                         })
                     }
                     else {
-                        foreach ($col in $columns) {
+                        $firstTable = $tables[0]
+                        $colsForTable = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                        foreach ($r in $refInfo.Refs) {
+                            if ($null -ne $r.TableName -and ($r.TableName -eq $table)) {
+                                [void]$colsForTable.Add($r.ColumnName)
+                            }
+                            elseif (($null -eq $r.TableName -or $r.TableName -eq '') -and ($table -eq $firstTable)) {
+                                [void]$colsForTable.Add($r.ColumnName)
+                            }
+                        }
+                        if ($colsForTable.Count -eq 0) {
                             [void]$results.Add(@{
                                 TableName  = $table
-                                ColumnName = $col
+                                ColumnName = "*"
                                 Operation  = "R"
                             })
+                        }
+                        else {
+                            foreach ($col in $colsForTable) {
+                                [void]$results.Add(@{
+                                    TableName  = $table
+                                    ColumnName = $col
+                                    Operation  = "R"
+                                })
+                            }
                         }
                     }
                 }
@@ -519,7 +538,7 @@ function Get-SelectColumns {
 
     $cleaned = $SelectClause -replace '(?i)\bBULK\s+COLLECT\s+', ' '
     $cleaned = $cleaned -replace '(?i)\bDISTINCT\b', ''
-    $cleaned = $cleaned -replace '(?i)\bINTO\b.*$', ''
+    $cleaned = $cleaned -replace '(?is)\bINTO\b.*$', ''
     $cleaned = $cleaned.Trim()
     $parts = Split-ByCommaRespectingParens -Text $cleaned
 
@@ -527,7 +546,6 @@ function Get-SelectColumns {
         $trimmed = $part.Trim()
         if ($trimmed -eq '') { continue }
 
-        $alias = $null
         if ($trimmed -match '(?i)\bAS\s+(\w+)\s*$') {
             $alias = $Matches[1].ToUpper()
             $colExpr = ($trimmed -replace '(?i)\s+AS\s+\w+\s*$', '').Trim()
@@ -610,6 +628,156 @@ function Get-SelectColumns {
     }
 
     return $columns
+}
+
+function Get-SelectColumnRefs {
+    param([string]$SelectClause)
+
+    $refs = [System.Collections.ArrayList]::new()
+    $starOnly = $false
+
+    if ($SelectClause.Trim() -eq '*') {
+        $starOnly = $true
+        return @{ StarOnly = $starOnly; Refs = $refs }
+    }
+
+    $cleaned = $SelectClause -replace '(?i)\bBULK\s+COLLECT\s+', ' '
+    $cleaned = $cleaned -replace '(?i)\bDISTINCT\b', ''
+    $cleaned = $cleaned -replace '(?is)\bINTO\b.*$', ''
+    $cleaned = $cleaned.Trim()
+    $parts = Split-ByCommaRespectingParens -Text $cleaned
+
+    foreach ($part in $parts) {
+        $trimmed = $part.Trim()
+        if ($trimmed -eq '') { continue }
+
+        if ($trimmed -match '(?i)\bAS\s+(\w+)\s*$') {
+            $colExpr = ($trimmed -replace '(?i)\s+AS\s+\w+\s*$', '').Trim()
+        }
+        elseif ($trimmed -match '\s+(\w+)\s*$') {
+            $candidate = $Matches[1].ToUpper()
+            $exprPart = ($trimmed -replace '\s+\w+\s*$', '').Trim()
+            $isReserved = $candidate -in @('SELECT','FROM','WHERE','AND','OR','NOT','NULL','CASE','WHEN','THEN','ELSE','END','BY','ASC','DESC','INTO','AS')
+            if ($exprPart -ne '' -and $candidate -notmatch '^\d' -and -not $isReserved -and -not (Test-SqlFunction -Name $candidate)) {
+                $colExpr = $exprPart
+            }
+            else {
+                $colExpr = $trimmed
+            }
+        }
+        else {
+            $colExpr = $trimmed
+        }
+
+        $colExprAgg = $colExpr -replace '[\r\n]+', ' '
+        if ($colExprAgg -match '(?i)(?<![\w$#])(?:COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(?:DISTINCT\s+)?([^)]*)\)') {
+            $innerAgg = $Matches[1].Trim() -replace '(?i)^DISTINCT\s+', ''
+            if ($innerAgg -eq '') {
+                continue
+            }
+            if ($innerAgg -eq '*' -or $innerAgg -match '^\*+$') {
+                $starOnly = $true
+                continue
+            }
+            if ($innerAgg -match '^\d+$') {
+                continue
+            }
+            if ($innerAgg -match '^(?i)([\w$]+)\.([\w$]+)\.([\w$]+)\s*$') {
+                $tblQ = $Matches[2].ToUpper()
+                $innerName = $Matches[3].ToUpper()
+                $isReservedCol = $innerName -in @('NULL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END')
+                if (-not (Test-SqlFunction -Name $innerName) -and -not $isReservedCol) {
+                    [void]$refs.Add(@{ TableName = $tblQ; ColumnName = $innerName })
+                }
+                continue
+            }
+            if ($innerAgg -match '^(?i)([\w$]+)\.([\w$]+)\s*$') {
+                $tblQ = $Matches[1].ToUpper()
+                $innerName = $Matches[2].ToUpper()
+                $isReservedCol = $innerName -in @('NULL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END')
+                if (-not (Test-SqlFunction -Name $tblQ) -and -not (Test-SqlFunction -Name $innerName) -and -not $isReservedCol) {
+                    [void]$refs.Add(@{ TableName = $tblQ; ColumnName = $innerName })
+                }
+                continue
+            }
+            if ($innerAgg -match '^(?i)([\w$]+)\s*$') {
+                $innerName = $Matches[1].ToUpper()
+                $isReservedCol = $innerName -in @('NULL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END')
+                if (-not (Test-SqlFunction -Name $innerName) -and -not $isReservedCol) {
+                    [void]$refs.Add(@{ TableName = $null; ColumnName = $innerName })
+                }
+            }
+            continue
+        }
+
+        $hasParens = $colExpr.Contains('(')
+        $colExprBase = $colExpr -replace '(?:\w+\.)', ''
+        $isFuncExpr = $hasParens -or (Test-SqlFunction -Name $colExprBase)
+        if ($isFuncExpr) {
+            $funcContent = $colExpr
+            while ($funcContent -match '^\w+\s*[(]') {
+                $funcContent = $funcContent -replace '^\w+\s*[(]\s*', ''
+                $funcContent = $funcContent -replace '\s*[)]\s*$', ''
+            }
+            $funcContent = $funcContent -replace '(?i)^\s*DISTINCT\s+', ''
+            $funcContent = $funcContent.Trim()
+            if ($funcContent -eq '*') {
+                $starOnly = $true
+            }
+            elseif ($funcContent -match '^(?i)([\w$]+)\.([\w$]+)\.([\w$]+)\s*$') {
+                $innerName = $Matches[3].ToUpper()
+                $tblQ = $Matches[2].ToUpper()
+                $isReservedCol = $innerName -in @('NULL','CASE','WHEN','THEN','ELSE','END')
+                if (-not (Test-SqlFunction -Name $innerName) -and -not $isReservedCol -and $innerName -notmatch '^\d') {
+                    [void]$refs.Add(@{ TableName = $tblQ; ColumnName = $innerName })
+                }
+            }
+            elseif ($funcContent -match '^(?i)([\w$]+)\.([\w$]+)\s*$') {
+                $tblQ = $Matches[1].ToUpper()
+                $innerName = $Matches[2].ToUpper()
+                $isReservedCol = $innerName -in @('NULL','CASE','WHEN','THEN','ELSE','END')
+                if (-not (Test-SqlFunction -Name $tblQ) -and -not (Test-SqlFunction -Name $innerName) -and -not $isReservedCol -and $innerName -notmatch '^\d') {
+                    [void]$refs.Add(@{ TableName = $tblQ; ColumnName = $innerName })
+                }
+            }
+            elseif ($funcContent -match '(?i)^([\w$]+)$') {
+                $innerName = $Matches[1].ToUpper()
+                $isReservedCol = $innerName -in @('NULL','CASE','WHEN','THEN','ELSE','END')
+                if (-not (Test-SqlFunction -Name $innerName) -and -not $isReservedCol -and $innerName -notmatch '^\d') {
+                    [void]$refs.Add(@{ TableName = $null; ColumnName = $innerName })
+                }
+            }
+        }
+        elseif ($colExpr -match '^(?i)([\w$]+)\.([\w$]+)\.([\w$]+)\s*$') {
+            $colName = $Matches[3].ToUpper()
+            $tblQ = $Matches[2].ToUpper()
+            $isReservedCol2 = $colName -in @('SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'NULL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'INTO')
+            if (-not $isReservedCol2 -and $colName -notmatch '^\d+$' -and -not (Test-SqlFunction -Name $colName)) {
+                [void]$refs.Add(@{ TableName = $tblQ; ColumnName = $colName })
+            }
+        }
+        elseif ($colExpr -match '^(?i)([\w$]+)\.([\w$]+)\s*$') {
+            $tblQ = $Matches[1].ToUpper()
+            $colName = $Matches[2].ToUpper()
+            $isReservedCol2 = $colName -in @('SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'NULL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'INTO')
+            if (-not (Test-SqlFunction -Name $tblQ) -and -not $isReservedCol2 -and $colName -notmatch '^\d+$' -and -not (Test-SqlFunction -Name $colName)) {
+                [void]$refs.Add(@{ TableName = $tblQ; ColumnName = $colName })
+            }
+        }
+        elseif ($colExpr -match '(?:\w+\.)?(\w+)$') {
+            $colName = $Matches[1].ToUpper()
+            $isReservedCol2 = $colName -in @('SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'NULL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'INTO')
+            if (-not $isReservedCol2 -and $colName -notmatch '^\d+$' -and -not (Test-SqlFunction -Name $colName)) {
+                [void]$refs.Add(@{ TableName = $null; ColumnName = $colName })
+            }
+        }
+    }
+
+    if ($refs.Count -eq 0 -and $SelectClause -match '(?i)\(\s*\*\s*\)') {
+        $starOnly = $true
+    }
+
+    return @{ StarOnly = $starOnly; Refs = $refs }
 }
 
 function Get-SetColumns {
