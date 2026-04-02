@@ -251,12 +251,37 @@ function Get-TableAndColumns {
             }
         }
         "DELETE" {
-            $pattern1 = '(?i)DELETE\s+FROM\s+(?:([\w$]+)\.)?([\w$]+)'
+            $deletedTables = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $deleteKwMatches = [regex]::Matches($SqlFragment, '(?i)\bDELETE\b')
+            foreach ($dm in $deleteKwMatches) {
+                $i = $dm.Index + $dm.Length
+                $len = $SqlFragment.Length
+                while ($i -lt $len -and [char]::IsWhiteSpace($SqlFragment[$i])) { $i++ }
+                if ($i + 4 -gt $len) { continue }
+                if (-not ($SqlFragment.Substring($i, 4) -cmatch '(?i)^FROM\b')) { continue }
+                $afterFrom = $i + 4
+                if ($afterFrom -lt $len -and [char]::IsLetterOrDigit($SqlFragment[$afterFrom])) { continue }
+                $i = $afterFrom
+                while ($i -lt $len -and [char]::IsWhiteSpace($SqlFragment[$i])) { $i++ }
+                if ($i -ge $len) { continue }
+                $rest = $SqlFragment.Substring($i)
+                $idm = [regex]::Match($rest, '^(?:(?:([\w$]+)\.)?([\w$]+))')
+                if (-not $idm.Success) { continue }
+                $tableName = $idm.Groups[2].Value.ToUpper()
+                if ($tableName -eq '') { continue }
+                if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
+                if ($deletedTables.Contains($tableName)) { continue }
+                [void]$deletedTables.Add($tableName)
+                [void]$results.Add(@{
+                    TableName  = $tableName
+                    ColumnName = "(ALL)"
+                    Operation  = "D"
+                })
+            }
+
             $pattern2 = '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s+WHERE\b'
             $pattern3 = '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s*;'
-            
-            $deletedTables = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-            foreach ($pat in @($pattern1, $pattern2, $pattern3)) {
+            foreach ($pat in @($pattern2, $pattern3)) {
                 $m = [regex]::Matches($SqlFragment, $pat)
                 foreach ($match in $m) {
                     $tableName = $match.Groups[2].Value.ToUpper()
