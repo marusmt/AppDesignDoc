@@ -492,6 +492,11 @@ function Get-SelectColumns {
             $colExpr = $trimmed
         }
 
+        if ($colExpr -match '(?i)\b(?:COUNT|SUM|AVG|MIN|MAX)\s*\(\s*\*\s*\)') {
+            [void]$columns.Add("*")
+            continue
+        }
+
         $hasParens = $colExpr.Contains('(')
         $colExprBase = $colExpr -replace '(?:\w+\.)', ''
         $isFuncExpr = $hasParens -or (Test-SqlFunction -Name $colExprBase)
@@ -502,12 +507,18 @@ function Get-SelectColumns {
                 $funcContent = $funcContent -replace '\s*[)]\s*$', ''
             }
             $funcContent = $funcContent -replace '(?i)^\s*DISTINCT\s+', ''
-            $colPattern = '(?:(\w+)\.)?(\w+)'
-            if ($funcContent -match $colPattern) {
-                $innerName = $Matches[2]
-                $isReservedCol = $innerName.ToUpper() -in @('NULL','CASE','WHEN','THEN','ELSE','END')
-                if (-not (Test-SqlFunction -Name $innerName) -and -not $isReservedCol -and $innerName -notmatch '^\d') {
-                    [void]$columns.Add($innerName.ToUpper())
+            $funcContent = $funcContent.Trim()
+            if ($funcContent -eq '*') {
+                [void]$columns.Add("*")
+            }
+            else {
+                $colPattern = '(?:(\w+)\.)?(\w+)'
+                if ($funcContent -match $colPattern) {
+                    $innerName = $Matches[2]
+                    $isReservedCol = $innerName.ToUpper() -in @('NULL','CASE','WHEN','THEN','ELSE','END')
+                    if (-not (Test-SqlFunction -Name $innerName) -and -not $isReservedCol -and $innerName -notmatch '^\d') {
+                        [void]$columns.Add($innerName.ToUpper())
+                    }
                 }
             }
         }
@@ -518,6 +529,10 @@ function Get-SelectColumns {
                 [void]$columns.Add($colName)
             }
         }
+    }
+
+    if ($columns.Count -eq 0 -and $SelectClause -match '(?i)\(\s*\*\s*\)') {
+        [void]$columns.Add("*")
     }
 
     return $columns
