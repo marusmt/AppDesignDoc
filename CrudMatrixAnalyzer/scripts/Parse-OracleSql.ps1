@@ -147,6 +147,37 @@ function Get-DeleteCrudRows {
     return $out
 }
 
+function Step-OracleSqlScanOneChar {
+    param(
+        [string]$Text,
+        [int]$ScanPos,
+        [ref]$InString,
+        [ref]$Depth
+    )
+
+    $ch = $Text[$ScanPos]
+    if ($InString.Value) {
+        if ($ch -eq [char]0x27 -and $ScanPos + 1 -lt $Text.Length -and $Text[$ScanPos + 1] -eq [char]0x27) {
+            return 2
+        }
+        if ($ch -eq [char]0x27) {
+            $InString.Value = $false
+        }
+        return 1
+    }
+    if ($ch -eq [char]0x27) {
+        $InString.Value = $true
+        return 1
+    }
+    if ($ch -eq '(') {
+        $Depth.Value++
+    }
+    elseif ($ch -eq ')') {
+        $Depth.Value--
+    }
+    return 1
+}
+
 function Get-TableAndColumns {
     param([string]$SqlFragment, [string]$OperationType)
 
@@ -184,6 +215,7 @@ function Get-TableAndColumns {
             $selectMatches = [regex]::Matches($SqlFragment, '(?i)\bSELECT\b')
             foreach ($sm in $selectMatches) {
                 $depth = 0
+                $inString = $false
                 $selectStart = $sm.Index + $sm.Length
                 $fromStart = -1
                 $fromEnd = -1
@@ -191,21 +223,16 @@ function Get-TableAndColumns {
                 $text = $SqlFragment
 
                 while ($scanPos -lt $text.Length) {
-                    $ch = $text[$scanPos]
-                    if ($ch -eq '(') { $depth++ }
-                    elseif ($ch -eq ')') {
-                        $depth--
-                        if ($depth -lt 0) { break }
-                    }
-
-                    if ($depth -eq 0 -and $scanPos -lt $text.Length) {
+                    if (-not $inString -and $depth -eq 0) {
                         $tail = $text.Substring($scanPos)
                         if ($tail -match '(?i)^FROM\b') {
                             $fromStart = $scanPos
                             break
                         }
                     }
-                    $scanPos++
+                    $adv = Step-OracleSqlScanOneChar -Text $text -ScanPos $scanPos -InString ([ref]$inString) -Depth ([ref]$depth)
+                    if ($depth -lt 0) { break }
+                    $scanPos += $adv
                 }
 
                 if ($fromStart -lt 0) { continue }
@@ -215,28 +242,16 @@ function Get-TableAndColumns {
                 if ($afterFrom -ge $text.Length) { continue }
 
                 $depth = 0
+                $inString = $false
                 $fromBodyStart = $afterFrom
                 $fromEnd = $text.Length
                 $scanPos = $afterFrom
 
-                $terminators = @('WHERE', 'ORDER', 'GROUP', 'HAVING', 'UNION', 'INTERSECT', 'MINUS', 'FETCH', 'FOR')
+                $terminators = @('WHERE', 'ORDER', 'GROUP', 'HAVING', 'UNION', 'INTERSECT', 'MINUS', 'FETCH', 'FOR', 'CONNECT')
 
                 while ($scanPos -lt $text.Length) {
                     $ch = $text[$scanPos]
-                    if ($ch -eq '(') { $depth++ }
-                    elseif ($ch -eq ')') {
-                        $depth--
-                        if ($depth -lt 0) {
-                            $fromEnd = $scanPos
-                            break
-                        }
-                    }
-                    elseif ($ch -eq ';' -and $depth -eq 0) {
-                        $fromEnd = $scanPos
-                        break
-                    }
-
-                    if ($depth -eq 0) {
+                    if (-not $inString -and $depth -eq 0) {
                         foreach ($term in $terminators) {
                             $termLen = $term.Length
                             if (($scanPos + $termLen) -le $text.Length) {
@@ -252,8 +267,18 @@ function Get-TableAndColumns {
                             }
                         }
                         if ($fromEnd -ne $text.Length -and $fromEnd -eq $scanPos) { break }
+                        if ($ch -eq ';') {
+                            $fromEnd = $scanPos
+                            break
+                        }
                     }
-                    $scanPos++
+                    $oldPos = $scanPos
+                    $adv = Step-OracleSqlScanOneChar -Text $text -ScanPos $scanPos -InString ([ref]$inString) -Depth ([ref]$depth)
+                    if ($depth -lt 0) {
+                        $fromEnd = $oldPos
+                        break
+                    }
+                    $scanPos += $adv
                 }
 
                 $fromClause = $text.Substring($fromBodyStart, $fromEnd - $fromBodyStart).Trim()
@@ -420,6 +445,7 @@ function Get-FromTables {
         if ($trimmed -eq '') { continue }
         if ($trimmed.StartsWith('(')) { continue }
 
+        $trimmed = $trimmed -replace '(?i)\bWHERE\b.*$', ''
         $trimmed = $trimmed -replace '(?i)\bON\b.*$', ''
         $trimmed = $trimmed.Trim()
         if ($trimmed -eq '') { continue }
