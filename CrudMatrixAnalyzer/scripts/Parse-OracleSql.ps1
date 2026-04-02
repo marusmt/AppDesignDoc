@@ -198,9 +198,9 @@ function Get-TableAndColumns {
                         if ($depth -lt 0) { break }
                     }
 
-                    if ($depth -eq 0 -and ($scanPos + 5) -le $text.Length) {
-                        $word = $text.Substring($scanPos, [Math]::Min(5, $text.Length - $scanPos))
-                        if ($word -match '(?i)^FROM\b') {
+                    if ($depth -eq 0 -and $scanPos -lt $text.Length) {
+                        $tail = $text.Substring($scanPos)
+                        if ($tail -match '(?i)^FROM\b') {
                             $fromStart = $scanPos
                             break
                         }
@@ -410,7 +410,7 @@ function Get-FromTables {
                      'INTO', 'FROM', 'AND', 'OR', 'NOT', 'NULL', 'AS', 'ON', 'IN',
                      'EXISTS', 'BETWEEN', 'LIKE', 'IS', 'CASE', 'WHEN', 'THEN',
                      'ELSE', 'END', 'BY', 'ASC', 'DESC', 'DISTINCT', 'ALL', 'ANY',
-                     'TABLE', 'LATERAL', 'CONNECT', 'START', 'WITH', 'PRIOR',
+                     'LATERAL', 'CONNECT', 'START', 'WITH', 'PRIOR',
                      'UNION', 'INTERSECT', 'MINUS', 'FETCH', 'OFFSET', 'ONLY',
                      'PARTITION', 'OVER', 'ROWS', 'RANGE', 'UNBOUNDED', 'PRECEDING',
                      'FOLLOWING', 'CURRENT')
