@@ -4,6 +4,7 @@
 
 .DESCRIPTION
     Oracle PL/SQL パッケージ・トリガー・ビュー等のSQLファイルを読み込み、
+    オブジェクト単位（パッケージ本文全体・1ファイル全体など）で
     INSERT/SELECT/UPDATE/DELETE/MERGE文からテーブル名・項目名・操作種別を抽出する
 
 .PARAMETER SourcePath
@@ -64,54 +65,6 @@ function Get-OracleObjectInfo {
         ObjectName = $objectName
         ObjectType = $objectType
     }
-}
-
-function Get-ProcedureBlocks {
-    param([string]$Content)
-
-    $blocks = [System.Collections.ArrayList]::new()
-
-    $linePattern = '(?im)^(\s*)(?:PROCEDURE|FUNCTION)\s+(\w+)'
-    $regexMatches = [regex]::Matches($Content, $linePattern)
-
-    if ($regexMatches.Count -eq 0) {
-        $fallbackPattern = '(?i)(?:PROCEDURE|FUNCTION)\s+(\w+)'
-        $regexMatches = [regex]::Matches($Content, $fallbackPattern)
-        if ($regexMatches.Count -eq 0) {
-            [void]$blocks.Add(@{
-                Name    = "(MAIN)"
-                Content = $Content
-            })
-            return $blocks
-        }
-
-        for ($i = 0; $i -lt $regexMatches.Count; $i++) {
-            $startIdx = $regexMatches[$i].Index
-            $endIdx = if ($i + 1 -lt $regexMatches.Count) { $regexMatches[$i + 1].Index } else { $Content.Length }
-            $blockContent = $Content.Substring($startIdx, $endIdx - $startIdx)
-            $procName = $regexMatches[$i].Groups[1].Value.ToUpper()
-
-            [void]$blocks.Add(@{
-                Name    = $procName
-                Content = $blockContent
-            })
-        }
-        return $blocks
-    }
-
-    for ($i = 0; $i -lt $regexMatches.Count; $i++) {
-        $startIdx = $regexMatches[$i].Index
-        $endIdx = if ($i + 1 -lt $regexMatches.Count) { $regexMatches[$i + 1].Index } else { $Content.Length }
-        $blockContent = $Content.Substring($startIdx, $endIdx - $startIdx)
-        $procName = $regexMatches[$i].Groups[2].Value.ToUpper()
-
-        [void]$blocks.Add(@{
-            Name    = $procName
-            Content = $blockContent
-        })
-    }
-
-    return $blocks
 }
 
 function Get-DeleteCrudRows {
@@ -590,37 +543,32 @@ function ConvertFrom-OracleSqlFile {
         $parseContent = Get-PackageBodySection -Content $content
     }
 
-    $blocks = Get-ProcedureBlocks -Content $parseContent
-
     $results = [System.Collections.ArrayList]::new()
+    $featureName = "$($objectInfo.ObjectType):$($objectInfo.ObjectName)"
+    $extractCount = 0
 
-    foreach ($block in $blocks) {
-        $featureName = "$($objectInfo.ObjectType):$($objectInfo.ObjectName).$($block.Name)"
-        $blockExtractCount = 0
+    foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
+        $extracted = Get-TableAndColumns -SqlFragment $parseContent -OperationType $opType
+        $extractCount += $extracted.Count
 
-        foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
-            $extracted = Get-TableAndColumns -SqlFragment $block.Content -OperationType $opType
-            $blockExtractCount += $extracted.Count
-
-            foreach ($item in $extracted) {
-                [void]$results.Add(@{
-                    SourceType  = "Oracle"
-                    SourceFile  = $fileName
-                    ObjectType  = $objectInfo.ObjectType
-                    ObjectName  = $objectInfo.ObjectName
-                    ProcName    = $block.Name
-                    FeatureName = $featureName
-                    TableName   = $item.TableName
-                    ColumnName  = $item.ColumnName
-                    Operation   = $item.Operation
-                })
-            }
+        foreach ($item in $extracted) {
+            [void]$results.Add(@{
+                SourceType  = "Oracle"
+                SourceFile  = $fileName
+                ObjectType  = $objectInfo.ObjectType
+                ObjectName  = $objectInfo.ObjectName
+                ProcName    = $objectInfo.ObjectName
+                FeatureName = $featureName
+                TableName   = $item.TableName
+                ColumnName  = $item.ColumnName
+                Operation   = $item.Operation
+            })
         }
+    }
 
-        if ($DebugLog) {
-            $hint = if ($blockExtractCount -eq 0) { " (パーサで0件→SQL未検出の可能性)" } else { "" }
-            Write-Host "[Oracle][Debug] 解析: $fileName | $($block.Name) | 抽出=$blockExtractCount | 本文=$($block.Content.Length) 文字$hint" -ForegroundColor DarkCyan
-        }
+    if ($DebugLog) {
+        $hint = if ($extractCount -eq 0) { " (パーサで0件→SQL未検出の可能性)" } else { "" }
+        Write-Host "[Oracle][Debug] 解析: $fileName | $($objectInfo.ObjectName) | 抽出=$extractCount | 本文=$($parseContent.Length) 文字$hint" -ForegroundColor DarkCyan
     }
 
     return $results
