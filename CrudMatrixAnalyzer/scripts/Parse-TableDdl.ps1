@@ -22,14 +22,34 @@ function Parse-CreateTable {
     $results = [System.Collections.ArrayList]::new()
     $cleaned = Remove-SqlCommentsForDdl -Content $Content
 
-    $tablePattern = '(?i)CREATE\s+TABLE\s+(?:(\w+)\.)?(\w+)\s*\(([\s\S]+?)\)\s*(?:TABLESPACE|PCTFREE|STORAGE|LOB|PARTITION|;|\s*$)'
-    $tableMatches = [regex]::Matches($cleaned, $tablePattern)
+    $headerPattern = '(?i)CREATE\s+(?:GLOBAL\s+TEMPORARY\s+)?TABLE\s+"?(?:(\w+)"?\."?)?(\w+)"?\s*\('
+    $headerMatches = [regex]::Matches($cleaned, $headerPattern)
 
-    foreach ($match in $tableMatches) {
+    foreach ($match in $headerMatches) {
         $schema = if ($match.Groups[1].Success) { $match.Groups[1].Value.ToUpper() } else { "" }
         $tableName = $match.Groups[2].Value.ToUpper()
-        $body = $match.Groups[3].Value
 
+        $startPos = $match.Index + $match.Length
+        $depth = 1
+        $pos = $startPos
+        $found = $false
+
+        while ($pos -lt $cleaned.Length) {
+            $ch = $cleaned[$pos]
+            if ($ch -eq '(') { $depth++ }
+            elseif ($ch -eq ')') {
+                $depth--
+                if ($depth -eq 0) {
+                    $found = $true
+                    break
+                }
+            }
+            $pos++
+        }
+
+        if (-not $found) { continue }
+
+        $body = $cleaned.Substring($startPos, $pos - $startPos)
         $columns = Extract-ColumnDefinitions -TableBody $body -TableName $tableName -Schema $schema
 
         foreach ($col in $columns) {
@@ -108,26 +128,66 @@ function Parse-CreateIndex {
     $results = [System.Collections.ArrayList]::new()
     $cleaned = Remove-SqlCommentsForDdl -Content $Content
 
-    $indexPattern = '(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+(?:(\w+)\.)?(\w+)\s+ON\s+(?:(\w+)\.)?(\w+)\s*\(([^)]+)\)'
-    $indexMatches = [regex]::Matches($cleaned, $indexPattern)
+    $headerPattern = '(?i)CREATE\s+(UNIQUE\s+)?INDEX\s+"?(?:(\w+)"?\."?)?(\w+)"?\s+ON\s+"?(?:(\w+)"?\."?)?(\w+)"?\s*\('
+    $headerMatches = [regex]::Matches($cleaned, $headerPattern)
 
-    foreach ($match in $indexMatches) {
+    foreach ($match in $headerMatches) {
         $isUnique = if ($match.Groups[1].Success) { "UNIQUE" } else { "NONUNIQUE" }
         $indexSchema = if ($match.Groups[2].Success) { $match.Groups[2].Value.ToUpper() } else { "" }
         $indexName = $match.Groups[3].Value.ToUpper()
         $tableSchema = if ($match.Groups[4].Success) { $match.Groups[4].Value.ToUpper() } else { "" }
         $tableName = $match.Groups[5].Value.ToUpper()
-        $columnsRaw = $match.Groups[6].Value
 
-        $columns = ($columnsRaw -split ',') | ForEach-Object {
-            $col = $_.Trim().ToUpper()
-            $col = $col -replace '\s+(ASC|DESC)\s*$', ''
-            $col
-        } | Where-Object { $_ -ne '' }
+        $startPos = $match.Index + $match.Length
+        $depth = 1
+        $pos = $startPos
+        $found = $false
+
+        while ($pos -lt $cleaned.Length) {
+            $ch = $cleaned[$pos]
+            if ($ch -eq '(') { $depth++ }
+            elseif ($ch -eq ')') {
+                $depth--
+                if ($depth -eq 0) {
+                    $found = $true
+                    break
+                }
+            }
+            $pos++
+        }
+
+        if (-not $found) { continue }
+
+        $columnsRaw = $cleaned.Substring($startPos, $pos - $startPos)
+
+        $colDepth = 0
+        $current = ""
+        $columns = [System.Collections.ArrayList]::new()
+        foreach ($ch in $columnsRaw.ToCharArray()) {
+            if ($ch -eq '(') { $colDepth++ }
+            elseif ($ch -eq ')') { $colDepth-- }
+
+            if ($ch -eq ',' -and $colDepth -eq 0) {
+                if ($current.Trim() -ne '') { [void]$columns.Add($current.Trim()) }
+                $current = ""
+            }
+            else {
+                $current += $ch
+            }
+        }
+        if ($current.Trim() -ne '') { [void]$columns.Add($current.Trim()) }
 
         $colPos = 0
-        foreach ($col in $columns) {
+        foreach ($colExpr in $columns) {
             $colPos++
+            $col = $colExpr.ToUpper()
+            $col = $col -replace '\s+(ASC|DESC)\s*$', ''
+            if ($col -match '^\w+\s*\((.+)\)$') {
+                $col = $Matches[1].Trim() -replace '"', ''
+            }
+            $col = $col -replace '"', ''
+            $col = $col.Trim()
+            if ($col -eq '') { continue }
             [void]$results.Add(@{
                 IndexSchema = $indexSchema
                 IndexName   = $indexName
