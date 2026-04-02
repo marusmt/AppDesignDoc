@@ -21,9 +21,56 @@ function Remove-SqlComments {
     param([string]$Content)
 
     $result = $Content -replace [char]0x3000, ' '
-    $result = $result -replace '--.*?(?=\r?\n|$)', ''
-    $result = $result -replace '/\*[\s\S]*?\*/', ''
-    return $result
+    $len = $result.Length
+    $sb = [System.Text.StringBuilder]::new()
+    $inString = $false
+    $i = 0
+    while ($i -lt $len) {
+        $ch = $result[$i]
+        if ($inString) {
+            if ($ch -eq [char]0x27 -and $i + 1 -lt $len -and $result[$i + 1] -eq [char]0x27) {
+                [void]$sb.Append($ch)
+                [void]$sb.Append($result[$i + 1])
+                $i += 2
+                continue
+            }
+            if ($ch -eq [char]0x27) {
+                $inString = $false
+            }
+            [void]$sb.Append($ch)
+            $i++
+            continue
+        }
+        if ($ch -eq [char]0x27) {
+            $inString = $true
+            [void]$sb.Append($ch)
+            $i++
+            continue
+        }
+        if ($ch -eq [char]0x2D -and $i + 1 -lt $len -and $result[$i + 1] -eq [char]0x2D) {
+            $i += 2
+            while ($i -lt $len -and $result[$i] -ne [char]10 -and $result[$i] -ne [char]13) {
+                $i++
+            }
+            continue
+        }
+        if ($ch -eq [char]0x2F -and $i + 1 -lt $len -and $result[$i + 1] -eq [char]0x2A) {
+            $i += 2
+            while ($i + 1 -lt $len -and -not ($result[$i] -eq [char]0x2A -and $result[$i + 1] -eq [char]0x2F)) {
+                $i++
+            }
+            if ($i + 1 -lt $len) {
+                $i += 2
+            }
+            else {
+                $i = $len
+            }
+            continue
+        }
+        [void]$sb.Append($ch)
+        $i++
+    }
+    return $sb.ToString()
 }
 
 function Get-OracleObjectInfo {
@@ -402,7 +449,8 @@ function Get-SelectColumns {
         return $columns
     }
 
-    $cleaned = $SelectClause -replace '(?i)\bDISTINCT\b', ''
+    $cleaned = $SelectClause -replace '(?i)\bBULK\s+COLLECT\s+', ' '
+    $cleaned = $cleaned -replace '(?i)\bDISTINCT\b', ''
     $cleaned = $cleaned -replace '(?i)\bINTO\b.*$', ''
     $cleaned = $cleaned.Trim()
     $parts = Split-ByCommaRespectingParens -Text $cleaned
@@ -432,22 +480,21 @@ function Get-SelectColumns {
             $colExpr = $trimmed
         }
 
-        if ($colExpr -match '(?i)\b(?:COUNT|SUM|AVG|MIN|MAX)\s*\(\s*\*\s*\)') {
-            [void]$columns.Add("*")
-            continue
-        }
-
-        if ($colExpr -match '(?i)\b(?:COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(?:DISTINCT\s+)?([^)]+)\s*\)') {
+        $colExprAgg = $colExpr -replace '[\r\n]+', ' '
+        if ($colExprAgg -match '(?i)(?<![\w$#])(?:COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(?:DISTINCT\s+)?([^)]*)\)') {
             $innerAgg = $Matches[1].Trim() -replace '(?i)^DISTINCT\s+', ''
-            if ($innerAgg -eq '*') {
+            if ($innerAgg -eq '') {
+                continue
+            }
+            if ($innerAgg -eq '*' -or $innerAgg -match '^\*+$') {
                 [void]$columns.Add("*")
                 continue
             }
             if ($innerAgg -match '^\d+$') {
                 continue
             }
-            if ($innerAgg -match '(?:([\w$]+)\.)?([\w$]+)\s*$') {
-                $innerName = $Matches[2]
+            if ($innerAgg -match '^(?:[\w$]+\.)*([\w$]+)\s*$') {
+                $innerName = $Matches[1]
                 $isReservedCol = $innerName.ToUpper() -in @('NULL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END')
                 if (-not (Test-SqlFunction -Name $innerName) -and -not $isReservedCol) {
                     [void]$columns.Add($innerName.ToUpper())
