@@ -465,6 +465,8 @@ function Get-SelectColumns {
     }
 
     $cleaned = $SelectClause -replace '(?i)\bDISTINCT\b', ''
+    $cleaned = $cleaned -replace '(?i)\bINTO\b.*$', ''
+    $cleaned = $cleaned.Trim()
     $parts = Split-ByCommaRespectingParens -Text $cleaned
 
     foreach ($part in $parts) {
@@ -524,7 +526,7 @@ function Get-SelectColumns {
         }
         elseif ($colExpr -match '(?:\w+\.)?(\w+)$') {
             $colName = $Matches[1].ToUpper()
-            $isReservedCol2 = $colName -in @('SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'NULL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END')
+            $isReservedCol2 = $colName -in @('SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'NULL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'INTO')
             if (-not $isReservedCol2 -and $colName -notmatch '^\d+$' -and -not (Test-SqlFunction -Name $colName)) {
                 [void]$columns.Add($colName)
             }
