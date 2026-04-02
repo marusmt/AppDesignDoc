@@ -570,7 +570,10 @@ function Get-PackageBodySection {
 }
 
 function ConvertFrom-OracleSqlFile {
-    param([string]$FilePath)
+    param(
+        [string]$FilePath,
+        [switch]$DebugLog
+    )
 
     $rawContent = Get-Content $FilePath -Raw -Encoding Default
     $content = Remove-SqlComments -Content $rawContent
@@ -589,9 +592,11 @@ function ConvertFrom-OracleSqlFile {
 
     foreach ($block in $blocks) {
         $featureName = "$($objectInfo.ObjectType):$($objectInfo.ObjectName).$($block.Name)"
+        $blockExtractCount = 0
 
         foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
             $extracted = Get-TableAndColumns -SqlFragment $block.Content -OperationType $opType
+            $blockExtractCount += $extracted.Count
 
             foreach ($item in $extracted) {
                 [void]$results.Add(@{
@@ -607,6 +612,11 @@ function ConvertFrom-OracleSqlFile {
                 })
             }
         }
+
+        if ($DebugLog) {
+            $hint = if ($blockExtractCount -eq 0) { " (パーサで0件→SQL未検出の可能性)" } else { "" }
+            Write-Host "[Oracle][Debug] 解析: $fileName | $($block.Name) | 抽出=$blockExtractCount | 本文=$($block.Content.Length) 文字$hint" -ForegroundColor DarkCyan
+        }
     }
 
     return $results
@@ -618,10 +628,15 @@ function ConvertFrom-OracleSqlDirectory {
         [string]$FilePattern = "*.sql",
         [string[]]$ExcludePatterns = @(),
         [string[]]$ExcludeTables = @(),
-        [string[]]$ExcludeSchemas = @()
+        [string[]]$ExcludeSchemas = @(),
+        [switch]$DebugLog
     )
 
     Write-Host "[Oracle] 解析開始: $SourcePath" -ForegroundColor Cyan
+    if ($DebugLog) {
+        Write-Host "[Oracle][Debug] 除外テーブル: $($ExcludeTables -join ', ')" -ForegroundColor DarkCyan
+        Write-Host "[Oracle][Debug] 除外スキーマ: $($ExcludeSchemas -join ', ')" -ForegroundColor DarkCyan
+    }
 
     $files = Get-ChildItem -Path $SourcePath -Filter $FilePattern -Recurse -File
     foreach ($pattern in $ExcludePatterns) {
@@ -638,7 +653,49 @@ function ConvertFrom-OracleSqlDirectory {
         Write-Progress -Activity "Oracle SQL 解析中" -Status "$fileCount / $($files.Count): $($file.Name)" -PercentComplete (($fileCount / $files.Count) * 100)
 
         try {
-            $fileResults = ConvertFrom-OracleSqlFile -FilePath $file.FullName
+            $fileResults = ConvertFrom-OracleSqlFile -FilePath $file.FullName -DebugLog:$DebugLog
+
+            if ($DebugLog -and $fileResults.Count -gt 0) {
+                $byFeature = $fileResults | Group-Object FeatureName
+                foreach ($gf in $byFeature) {
+                    $kept = 0
+                    $dropped = 0
+                    $dropReasons = [System.Collections.ArrayList]::new()
+                    foreach ($r in $gf.Group) {
+                        $skip = $false
+                        $reason = ""
+                        if ($r.TableName -in $ExcludeTables) {
+                            $skip = $true
+                            $reason = "ExcludeTables"
+                        }
+                        if (-not $skip) {
+                            foreach ($schema in $ExcludeSchemas) {
+                                if ($r.TableName -like "$schema*") {
+                                    $skip = $true
+                                    $reason = "ExcludeSchemas:$schema"
+                                    break
+                                }
+                            }
+                        }
+                        if ($skip) {
+                            $dropped++
+                            if ($dropReasons.Count -lt 5 -and $reason -ne "") {
+                                [void]$dropReasons.Add("$($r.TableName)($reason)")
+                            }
+                        }
+                        else {
+                            $kept++
+                        }
+                    }
+                    if ($dropped -gt 0 -and $kept -eq 0) {
+                        $sample = if ($dropReasons.Count -gt 0) { " 例: $($dropReasons -join ', ')" } else { "" }
+                        Write-Host "[Oracle][Debug] 除外のみ(全件フィルタ): $($gf.Name) | 件数=$dropped$sample" -ForegroundColor Yellow
+                    }
+                    elseif ($dropped -gt 0 -and $kept -gt 0) {
+                        Write-Host "[Oracle][Debug] 一部除外: $($gf.Name) | 残=$kept / 除外=$dropped" -ForegroundColor DarkCyan
+                    }
+                }
+            }
 
             foreach ($result in $fileResults) {
                 $skip = $false
