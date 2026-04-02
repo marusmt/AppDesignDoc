@@ -70,22 +70,55 @@ function Get-ProcedureBlocks {
     param([string]$Content)
 
     $blocks = [System.Collections.ArrayList]::new()
-    $pattern = '(?i)(?:PROCEDURE|FUNCTION)\s+(\w+)'
-    $regexMatches = [regex]::Matches($Content, $pattern)
+
+    $linePattern = '(?im)^(\s*)(?:PROCEDURE|FUNCTION)\s+(\w+)'
+    $regexMatches = [regex]::Matches($Content, $linePattern)
 
     if ($regexMatches.Count -eq 0) {
-        [void]$blocks.Add(@{
-            Name    = "(MAIN)"
-            Content = $Content
-        })
+        $fallbackPattern = '(?i)(?:PROCEDURE|FUNCTION)\s+(\w+)'
+        $regexMatches = [regex]::Matches($Content, $fallbackPattern)
+        if ($regexMatches.Count -eq 0) {
+            [void]$blocks.Add(@{
+                Name    = "(MAIN)"
+                Content = $Content
+            })
+            return $blocks
+        }
+
+        for ($i = 0; $i -lt $regexMatches.Count; $i++) {
+            $startIdx = $regexMatches[$i].Index
+            $endIdx = if ($i + 1 -lt $regexMatches.Count) { $regexMatches[$i + 1].Index } else { $Content.Length }
+            $blockContent = $Content.Substring($startIdx, $endIdx - $startIdx)
+            $procName = $regexMatches[$i].Groups[1].Value.ToUpper()
+
+            [void]$blocks.Add(@{
+                Name    = $procName
+                Content = $blockContent
+            })
+        }
         return $blocks
     }
 
-    for ($i = 0; $i -lt $regexMatches.Count; $i++) {
-        $startIdx = $regexMatches[$i].Index
-        $endIdx = if ($i + 1 -lt $regexMatches.Count) { $regexMatches[$i + 1].Index } else { $Content.Length }
+    $indentLengths = foreach ($m in $regexMatches) { $m.Groups[1].Value.Length }
+    $minIndent = ($indentLengths | Measure-Object -Minimum).Minimum
+    $topLevelMatches = [System.Collections.ArrayList]::new()
+    foreach ($m in $regexMatches) {
+        if ($m.Groups[1].Value.Length -eq $minIndent) {
+            [void]$topLevelMatches.Add($m)
+        }
+    }
+
+    if ($topLevelMatches.Count -eq 0) {
+        foreach ($m in $regexMatches) {
+            [void]$topLevelMatches.Add($m)
+        }
+    }
+
+    for ($i = 0; $i -lt $topLevelMatches.Count; $i++) {
+        $startIdx = $topLevelMatches[$i].Index
+        $endIdx = if ($i + 1 -lt $topLevelMatches.Count) { $topLevelMatches[$i + 1].Index } else { $Content.Length }
         $blockContent = $Content.Substring($startIdx, $endIdx - $startIdx)
-        $procName = $regexMatches[$i].Groups[1].Value.ToUpper()
+        $procName = $topLevelMatches[$i].Groups[2].Value.ToUpper()
 
         [void]$blocks.Add(@{
             Name    = $procName
