@@ -99,26 +99,11 @@ function Get-ProcedureBlocks {
         return $blocks
     }
 
-    $indentLengths = foreach ($m in $regexMatches) { $m.Groups[1].Value.Length }
-    $minIndent = ($indentLengths | Measure-Object -Minimum).Minimum
-    $topLevelMatches = [System.Collections.ArrayList]::new()
-    foreach ($m in $regexMatches) {
-        if ($m.Groups[1].Value.Length -eq $minIndent) {
-            [void]$topLevelMatches.Add($m)
-        }
-    }
-
-    if ($topLevelMatches.Count -eq 0) {
-        foreach ($m in $regexMatches) {
-            [void]$topLevelMatches.Add($m)
-        }
-    }
-
-    for ($i = 0; $i -lt $topLevelMatches.Count; $i++) {
-        $startIdx = $topLevelMatches[$i].Index
-        $endIdx = if ($i + 1 -lt $topLevelMatches.Count) { $topLevelMatches[$i + 1].Index } else { $Content.Length }
+    for ($i = 0; $i -lt $regexMatches.Count; $i++) {
+        $startIdx = $regexMatches[$i].Index
+        $endIdx = if ($i + 1 -lt $regexMatches.Count) { $regexMatches[$i + 1].Index } else { $Content.Length }
         $blockContent = $Content.Substring($startIdx, $endIdx - $startIdx)
-        $procName = $topLevelMatches[$i].Groups[2].Value.ToUpper()
+        $procName = $regexMatches[$i].Groups[2].Value.ToUpper()
 
         [void]$blocks.Add(@{
             Name    = $procName
@@ -138,49 +123,16 @@ function Get-DeleteCrudRows {
     $out = [System.Collections.ArrayList]::new()
     $seenTableNames = [System.Collections.ArrayList]::new()
 
-    $deleteKwMatches = [regex]::Matches($SqlFragment, '(?i)\bDELETE\b')
-    foreach ($dm in $deleteKwMatches) {
-        $i = $dm.Index + $dm.Length
-        $len = $SqlFragment.Length
-        while ($true) {
-            while ($i -lt $len -and [char]::IsWhiteSpace($SqlFragment[$i])) { $i++ }
-            if ($i + 1 -lt $len -and $SqlFragment[$i] -eq [char]0x2F -and $SqlFragment[$i + 1] -eq [char]0x2A) {
-                $close = $SqlFragment.IndexOf('*/', $i + 2, [System.StringComparison]::Ordinal)
-                if ($close -lt 0) { break }
-                $i = $close + 2
-                continue
-            }
-            break
-        }
-        if ($i -ge $len) { continue }
-        $tail = $SqlFragment.Substring($i)
-        $fromMatch = [regex]::Match($tail, '(?i)^FROM\b')
-        if (-not $fromMatch.Success) { continue }
-        $i = $i + $fromMatch.Length
-        if ($i -lt $len -and [char]::IsLetterOrDigit($SqlFragment[$i])) { continue }
-        while ($i -lt $len -and [char]::IsWhiteSpace($SqlFragment[$i])) { $i++ }
-        if ($i -ge $len) { continue }
-        $rest = $SqlFragment.Substring($i)
-        $idm = [regex]::Match($rest, '^(?:(?:([\w$]+)\.)?([\w$]+))')
-        if (-not $idm.Success) { continue }
-        $tableName = $idm.Groups[2].Value.ToUpper()
-        if ($tableName -eq '') { continue }
-        if ($CteNames.Count -gt 0 -and $CteNames.Contains($tableName)) { continue }
-        if ($seenTableNames -contains $tableName) { continue }
-        [void]$seenTableNames.Add($tableName)
-        [void]$out.Add(@{
-            TableName  = $tableName
-            ColumnName = "(ALL)"
-            Operation  = "D"
-        })
-    }
-
-    $pattern2 = '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s+WHERE\b'
-    $pattern3 = '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s*;'
-    foreach ($pat in @($pattern2, $pattern3)) {
+    $patterns = @(
+        '(?i)DELETE\s+FROM\s+(?:([\w$]+)\.)?([\w$]+)',
+        '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s+WHERE\b',
+        '(?i)DELETE\s+(?:([\w$]+)\.)?([\w$]+)\s*;'
+    )
+    foreach ($pat in $patterns) {
         $m = [regex]::Matches($SqlFragment, $pat)
         foreach ($match in $m) {
             $tableName = $match.Groups[2].Value.ToUpper()
+            if ($tableName -eq '') { continue }
             if ($CteNames.Count -gt 0 -and $CteNames.Contains($tableName)) { continue }
             if ($seenTableNames -contains $tableName) { continue }
             [void]$seenTableNames.Add($tableName)
@@ -529,6 +481,25 @@ function Get-SelectColumns {
 
         if ($colExpr -match '(?i)\b(?:COUNT|SUM|AVG|MIN|MAX)\s*\(\s*\*\s*\)') {
             [void]$columns.Add("*")
+            continue
+        }
+
+        if ($colExpr -match '(?i)\b(?:COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(?:DISTINCT\s+)?([^)]+)\s*\)') {
+            $innerAgg = $Matches[1].Trim() -replace '(?i)^DISTINCT\s+', ''
+            if ($innerAgg -eq '*') {
+                [void]$columns.Add("*")
+                continue
+            }
+            if ($innerAgg -match '^\d+$') {
+                continue
+            }
+            if ($innerAgg -match '(?:([\w$]+)\.)?([\w$]+)\s*$') {
+                $innerName = $Matches[2]
+                $isReservedCol = $innerName.ToUpper() -in @('NULL', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END')
+                if (-not (Test-SqlFunction -Name $innerName) -and -not $isReservedCol) {
+                    [void]$columns.Add($innerName.ToUpper())
+                }
+            }
             continue
         }
 
