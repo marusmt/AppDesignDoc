@@ -214,6 +214,15 @@ function Get-TableAndColumns {
         "SELECT" {
             $selectMatches = [regex]::Matches($SqlFragment, '(?i)\bSELECT\b')
             foreach ($sm in $selectMatches) {
+                $selIdx = $sm.Index
+                $j = $selIdx - 1
+                while ($j -ge 0 -and [char]::IsWhiteSpace($SqlFragment[$j])) {
+                    $j--
+                }
+                if ($j -ge 0 -and $SqlFragment[$j] -eq '(') {
+                    continue
+                }
+
                 $depth = 0
                 $inString = $false
                 $selectStart = $sm.Index + $sm.Length
@@ -224,10 +233,13 @@ function Get-TableAndColumns {
 
                 while ($scanPos -lt $text.Length) {
                     if (-not $inString -and $depth -eq 0) {
-                        $tail = $text.Substring($scanPos)
-                        if ($tail -match '(?i)^FROM\b') {
-                            $fromStart = $scanPos
-                            break
+                        $c0 = $text[$scanPos]
+                        if ($c0 -eq 'F' -or $c0 -eq 'f') {
+                            $tailLen = [Math]::Min(8, $text.Length - $scanPos)
+                            if ($tailLen -ge 4 -and $text.Substring($scanPos, $tailLen) -match '(?i)^FROM\b') {
+                                $fromStart = $scanPos
+                                break
+                            }
                         }
                     }
                     $adv = Step-OracleSqlScanOneChar -Text $text -ScanPos $scanPos -InString ([ref]$inString) -Depth ([ref]$depth)
@@ -247,7 +259,7 @@ function Get-TableAndColumns {
                 $fromEnd = $text.Length
                 $scanPos = $afterFrom
 
-                $terminators = @('WHERE', 'ORDER', 'GROUP', 'HAVING', 'UNION', 'INTERSECT', 'MINUS', 'FETCH', 'FOR', 'CONNECT')
+                $terminators = @('WHERE', 'ORDER', 'GROUP', 'HAVING', 'UNION', 'INTERSECT', 'MINUS', 'FETCH', 'FOR', 'CONNECT', 'PIVOT', 'UNPIVOT', 'MODEL')
 
                 while ($scanPos -lt $text.Length) {
                     $ch = $text[$scanPos]
@@ -360,21 +372,51 @@ function Split-ByCommaRespectingParens {
 
     $parts = [System.Collections.ArrayList]::new()
     $depth = 0
-    $current = ""
+    $inString = $false
+    $current = [System.Text.StringBuilder]::new()
+    $len = $Text.Length
+    $i = 0
+    while ($i -lt $len) {
+        $ch = $Text[$i]
+        if ($inString) {
+            if ($ch -eq [char]0x27 -and $i + 1 -lt $len -and $Text[$i + 1] -eq [char]0x27) {
+                [void]$current.Append($ch)
+                [void]$current.Append($Text[$i + 1])
+                $i += 2
+                continue
+            }
+            [void]$current.Append($ch)
+            if ($ch -eq [char]0x27) {
+                $inString = $false
+            }
+            $i++
+            continue
+        }
+        if ($ch -eq [char]0x27) {
+            $inString = $true
+            [void]$current.Append($ch)
+            $i++
+            continue
+        }
+        if ($ch -eq '(') {
+            $depth++
+        }
+        elseif ($ch -eq ')') {
+            $depth--
+        }
 
-    foreach ($char in $Text.ToCharArray()) {
-        if ($char -eq '(') { $depth++ }
-        elseif ($char -eq ')') { $depth-- }
-
-        if ($char -eq ',' -and $depth -eq 0) {
-            [void]$parts.Add($current)
-            $current = ""
+        if ($ch -eq ',' -and $depth -eq 0) {
+            [void]$parts.Add($current.ToString())
+            $current = [System.Text.StringBuilder]::new()
         }
         else {
-            $current += $char
+            [void]$current.Append($ch)
         }
+        $i++
     }
-    if ($current.Trim() -ne '') { [void]$parts.Add($current) }
+    if ($current.ToString().Trim() -ne '') {
+        [void]$parts.Add($current.ToString())
+    }
 
     return $parts
 }
