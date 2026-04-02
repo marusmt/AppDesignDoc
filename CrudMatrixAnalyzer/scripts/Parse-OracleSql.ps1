@@ -19,7 +19,8 @@
 function Remove-SqlComments {
     param([string]$Content)
 
-    $result = $Content -replace '--[^\r\n]*', ''
+    $result = $Content -replace [char]0x3000, ' '
+    $result = $result -replace '--.*?(?=\r?\n|$)', ''
     $result = $result -replace '/\*[\s\S]*?\*/', ''
     return $result
 }
@@ -97,6 +98,8 @@ function Get-ProcedureBlocks {
 
 function Get-TableAndColumns {
     param([string]$SqlFragment, [string]$OperationType)
+
+    $SqlFragment = $SqlFragment -replace [char]0x3000, ' '
 
     $results = [System.Collections.ArrayList]::new()
 
@@ -277,7 +280,12 @@ function Get-TableAndColumns {
                 [void]$results.Add(@{
                     TableName  = $tableName
                     ColumnName = "(ALL)"
-                    Operation  = "CU"
+                    Operation  = "C"
+                })
+                [void]$results.Add(@{
+                    TableName  = $tableName
+                    ColumnName = "(ALL)"
+                    Operation  = "U"
                 })
             }
         }
