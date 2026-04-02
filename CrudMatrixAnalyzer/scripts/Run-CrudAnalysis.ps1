@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     CRUD解析ツール メイン実行スクリプト
 
@@ -22,6 +22,9 @@
 .PARAMETER SkipDdl
     DDL（テーブル定義・インデックス定義）解析をスキップ
 
+.PARAMETER DebugOracle
+    Oracle 解析でプロシージャ単位の抽出件数・除外理由のデバッグ出力を行う
+
 .EXAMPLE
     .\Run-CrudAnalysis.ps1
     .\Run-CrudAnalysis.ps1 -ConfigPath ".\my_config.psd1" -ExportMode COM
@@ -35,7 +38,8 @@ param(
     [string]$ExportMode = "Module",
     [switch]$SkipOracle,
     [switch]$SkipVbNet,
-    [switch]$SkipDdl
+    [switch]$SkipDdl,
+    [switch]$DebugOracle
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,12 +87,16 @@ if (-not $SkipOracle) {
         Write-Warning "[Oracle] Oracle解析をスキップします"
     }
     else {
-        $oracleResults = ConvertFrom-OracleSqlDirectory `
-            -SourcePath $config.Oracle.SourcePath `
-            -FilePattern $config.Oracle.FilePattern `
-            -ExcludePatterns $config.Oracle.ExcludePatterns `
-            -ExcludeTables $config.ExcludeTables `
-            -ExcludeSchemas $config.ExcludeSchemas
+        $oracleParams = @{
+            SourcePath       = $config.Oracle.SourcePath
+            FilePattern      = $config.Oracle.FilePattern
+            ExcludePatterns  = $config.Oracle.ExcludePatterns
+            ExcludeTables    = $config.ExcludeTables
+            ExcludeSchemas   = $config.ExcludeSchemas
+        }
+        if ($DebugOracle) { $oracleParams.DebugLog = $true }
+        elseif ($null -ne $config.Oracle.DebugLog -and $config.Oracle.DebugLog -eq $true) { $oracleParams.DebugLog = $true }
+        $oracleResults = ConvertFrom-OracleSqlDirectory @oracleParams
 
         foreach ($r in $oracleResults) {
             [void]$allResults.Add($r)
