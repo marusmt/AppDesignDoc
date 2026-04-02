@@ -17,6 +17,8 @@
 function Get-VbNetSqlStrings {
     param([string]$Content)
 
+    $Content = $Content -replace [char]0x3000, ' '
+
     $sqlStrings = [System.Collections.ArrayList]::new()
 
     # パターン1: 単一行の文字列リテラル（SQL キーワードを含むもの）
