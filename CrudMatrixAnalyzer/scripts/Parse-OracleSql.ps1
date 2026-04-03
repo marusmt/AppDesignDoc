@@ -203,12 +203,124 @@ function Test-OracleFromClauseKeywordAt {
     return $true
 }
 
+function Test-OracleSelectKeywordAt {
+    param(
+        [string]$Text,
+        [int]$ScanPos
+    )
+
+    if ($ScanPos -lt 0 -or ($ScanPos + 6) -gt $Text.Length) {
+        return $false
+    }
+    $tailLen = [Math]::Min(12, $Text.Length - $ScanPos)
+    if ($Text.Substring($ScanPos, $tailLen) -notmatch '(?i)^SELECT\b') {
+        return $false
+    }
+    if ($ScanPos -gt 0) {
+        $prev = $Text[$ScanPos - 1]
+        if ([char]::IsLetterOrDigit($prev) -or $prev -eq '_' -or $prev -eq '$' -or $prev -eq '#') {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-OracleForUpdateOrShareClauseAt {
+    param(
+        [string]$Text,
+        [int]$ScanPos
+    )
+
+    if ($ScanPos + 7 -gt $Text.Length) {
+        return $false
+    }
+    $tailLen = [Math]::Min(32, $Text.Length - $ScanPos)
+    return $Text.Substring($ScanPos, $tailLen) -match '(?i)^FOR\s+(UPDATE|SHARE)\b'
+}
+
+function Test-OracleInSingleQuotedStringAt {
+    param([string]$Text, [int]$Pos)
+
+    if ($Pos -le 0) {
+        return $false
+    }
+    $inStr = $false
+    $i = 0
+    while ($i -lt $Pos) {
+        if ($Text[$i] -eq [char]0x27 -and $i + 1 -lt $Text.Length -and $Text[$i + 1] -eq [char]0x27) {
+            $i += 2
+            continue
+        }
+        if ($Text[$i] -eq [char]0x27) {
+            $inStr = -not $inStr
+        }
+        $i++
+    }
+    return $inStr
+}
+
+function Get-OracleSqlFragmentToStatementEnd {
+    param([string]$Text, [int]$StartPos)
+
+    if ($StartPos -ge $Text.Length) {
+        return ''
+    }
+    if (Test-OracleInSingleQuotedStringAt -Text $Text -Pos $StartPos) {
+        $i = $StartPos
+        while ($i -lt $Text.Length) {
+            if ($Text[$i] -eq [char]0x27 -and $i + 1 -lt $Text.Length -and $Text[$i + 1] -eq [char]0x27) {
+                $i += 2
+                continue
+            }
+            if ($Text[$i] -eq [char]0x27) {
+                return $Text.Substring($StartPos, $i - $StartPos)
+            }
+            $i++
+        }
+        return $Text.Substring($StartPos)
+    }
+    $depth = 0
+    $inString = $false
+    $i = $StartPos
+    while ($i -lt $Text.Length) {
+        $ch = $Text[$i]
+        if ($inString) {
+            if ($ch -eq [char]0x27 -and $i + 1 -lt $Text.Length -and $Text[$i + 1] -eq [char]0x27) {
+                $i += 2
+                continue
+            }
+            if ($ch -eq [char]0x27) {
+                $inString = $false
+            }
+            $i++
+            continue
+        }
+        if ($ch -eq [char]0x27) {
+            $inString = $true
+            $i++
+            continue
+        }
+        if ($ch -eq '(') {
+            $depth++
+        }
+        elseif ($ch -eq ')') {
+            $depth--
+        }
+        elseif ($ch -eq ';' -and $depth -eq 0) {
+            return $Text.Substring($StartPos, $i - $StartPos)
+        }
+        $i++
+    }
+    return $Text.Substring($StartPos)
+}
+
 function Get-TableAndColumns {
     param([string]$SqlFragment, [string]$OperationType)
 
     $SqlFragment = $SqlFragment -replace [char]0x3000, ' '
+    $SqlFragment = $SqlFragment -replace '(?is)\bOPEN\s+[\w$"]+\s+FOR\s+(?!SELECT\b|WITH\b)([\w$]+(?:\.[\w$]+)*)\s+USING\b', ' '
 
-    $results = [System.Collections.ArrayList]::new()
+    $crudExtractList = [System.Collections.ArrayList]::new()
 
     $cteNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     if ($SqlFragment -match '(?i)\bWITH\b') {
@@ -228,11 +340,45 @@ function Get-TableAndColumns {
                 $columnsRaw = $match.Groups[3].Value
                 $columns = ($columnsRaw -split ',') | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ -ne '' }
                 foreach ($col in $columns) {
-                    [void]$results.Add(@{
+                    [void]$crudExtractList.Add(@{
                         TableName  = $tableName
                         ColumnName = $col
                         Operation  = "C"
                     })
+                }
+            }
+
+            $patternInsertSelect = '(?is)INSERT\s+INTO\s+(?:([\w$]+)\.)?([\w$]+)\s+SELECT\s+'
+            foreach ($match in [regex]::Matches($SqlFragment, $patternInsertSelect)) {
+                $tableName = $match.Groups[2].Value.ToUpper()
+                if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
+                $tailStart = $match.Index + $match.Length
+                $tail = Get-OracleSqlFragmentToStatementEnd -Text $SqlFragment -StartPos $tailStart
+                if ($tail.Trim() -eq '') { continue }
+                $trimTail = $tail.Trim().TrimEnd(';')
+                $innerSelectSql = 'SELECT ' + $trimTail
+                $selResults = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $innerSelectSql -OperationType "SELECT")
+                $colNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                foreach ($sr in $selResults) {
+                    if ($sr.Operation -eq 'R' -and $sr.ColumnName -ne '*' -and $sr.ColumnName -ne '(ALL)') {
+                        [void]$colNames.Add($sr.ColumnName)
+                    }
+                }
+                if ($colNames.Count -eq 0) {
+                    [void]$crudExtractList.Add(@{
+                        TableName  = $tableName
+                        ColumnName = "*"
+                        Operation  = "C"
+                    })
+                }
+                else {
+                    foreach ($cn in $colNames) {
+                        [void]$crudExtractList.Add(@{
+                            TableName  = $tableName
+                            ColumnName = $cn
+                            Operation  = "C"
+                        })
+                    }
                 }
             }
         }
@@ -247,6 +393,9 @@ function Get-TableAndColumns {
                 if ($j -ge 0 -and $SqlFragment[$j] -eq '(') {
                     continue
                 }
+                if ($j -ge 0 -and $SqlFragment[$j] -eq ',') {
+                    continue
+                }
 
                 $depth = 0
                 $inString = $false
@@ -255,14 +404,25 @@ function Get-TableAndColumns {
                 $fromEnd = -1
                 $scanPos = $selectStart
                 $text = $SqlFragment
+                $nestedSelectFromSkipsRemaining = 0
 
                 while ($scanPos -lt $text.Length) {
                     if (-not $inString -and $depth -eq 0) {
-                        $c0 = $text[$scanPos]
-                        if ($c0 -eq 'F' -or $c0 -eq 'f') {
-                            if (Test-OracleFromClauseKeywordAt -Text $text -ScanPos $scanPos) {
-                                $fromStart = $scanPos
-                                break
+                        if (Test-OracleSelectKeywordAt -Text $text -ScanPos $scanPos) {
+                            $nestedSelectFromSkipsRemaining++
+                        }
+                        else {
+                            $c0 = $text[$scanPos]
+                            if ($c0 -eq 'F' -or $c0 -eq 'f') {
+                                if (Test-OracleFromClauseKeywordAt -Text $text -ScanPos $scanPos) {
+                                    if ($nestedSelectFromSkipsRemaining -gt 0) {
+                                        $nestedSelectFromSkipsRemaining--
+                                    }
+                                    else {
+                                        $fromStart = $scanPos
+                                        break
+                                    }
+                                }
                             }
                         }
                     }
@@ -283,11 +443,17 @@ function Get-TableAndColumns {
                 $fromEnd = $text.Length
                 $scanPos = $afterFrom
 
-                $terminators = @('WHERE', 'ORDER', 'GROUP', 'HAVING', 'UNION', 'INTERSECT', 'MINUS', 'FETCH', 'FOR', 'CONNECT', 'PIVOT', 'UNPIVOT', 'MODEL')
+                $terminators = @('WHERE', 'ORDER', 'GROUP', 'HAVING', 'UNION', 'INTERSECT', 'MINUS', 'FETCH', 'CONNECT', 'PIVOT', 'UNPIVOT', 'MODEL')
 
                 while ($scanPos -lt $text.Length) {
                     $ch = $text[$scanPos]
                     if (-not $inString -and $depth -eq 0) {
+                        if ($scanPos -gt 0 -and $text[$scanPos - 1] -match '\s') {
+                            if (Test-OracleForUpdateOrShareClauseAt -Text $text -ScanPos $scanPos) {
+                                $fromEnd = $scanPos
+                            }
+                        }
+                        if ($fromEnd -ne $text.Length -and $fromEnd -eq $scanPos) { break }
                         foreach ($term in $terminators) {
                             $termLen = $term.Length
                             if (($scanPos + $termLen) -le $text.Length) {
@@ -321,12 +487,12 @@ function Get-TableAndColumns {
 
                 if ($selectClause -eq '' -or $fromClause -eq '') { continue }
 
-                $tables = Get-FromTables -FromClause $fromClause -ExcludeNames $cteNames
+                $tables = Normalize-OracleTableList (Get-FromTables -FromClause $fromClause -ExcludeNames $cteNames)
                 $refInfo = Get-SelectColumnRefs -SelectClause $selectClause
 
                 foreach ($table in $tables) {
                     if ($refInfo.StarOnly -or $refInfo.Refs.Count -eq 0) {
-                        [void]$results.Add(@{
+                        [void]$crudExtractList.Add(@{
                             TableName  = $table
                             ColumnName = "*"
                             Operation  = "R"
@@ -335,16 +501,16 @@ function Get-TableAndColumns {
                     else {
                         $firstTable = $tables[0]
                         $colsForTable = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-                        foreach ($r in $refInfo.Refs) {
-                            if ($null -ne $r.TableName -and ($r.TableName -eq $table)) {
-                                [void]$colsForTable.Add($r.ColumnName)
+                        foreach ($colRef in $refInfo.Refs) {
+                            if ($null -ne $colRef.TableName -and ($colRef.TableName -eq $table)) {
+                                [void]$colsForTable.Add($colRef.ColumnName)
                             }
-                            elseif (($null -eq $r.TableName -or $r.TableName -eq '') -and ($table -eq $firstTable)) {
-                                [void]$colsForTable.Add($r.ColumnName)
+                            elseif (($null -eq $colRef.TableName -or $colRef.TableName -eq '') -and ($table -eq $firstTable)) {
+                                [void]$colsForTable.Add($colRef.ColumnName)
                             }
                         }
                         if ($colsForTable.Count -eq 0) {
-                            [void]$results.Add(@{
+                            [void]$crudExtractList.Add(@{
                                 TableName  = $table
                                 ColumnName = "*"
                                 Operation  = "R"
@@ -352,7 +518,7 @@ function Get-TableAndColumns {
                         }
                         else {
                             foreach ($col in $colsForTable) {
-                                [void]$results.Add(@{
+                                [void]$crudExtractList.Add(@{
                                     TableName  = $table
                                     ColumnName = $col
                                     Operation  = "R"
@@ -373,7 +539,7 @@ function Get-TableAndColumns {
                 $columns = Get-SetColumns -SetClause $setClause
 
                 foreach ($col in $columns) {
-                    [void]$results.Add(@{
+                    [void]$crudExtractList.Add(@{
                         TableName  = $tableName
                         ColumnName = $col
                         Operation  = "U"
@@ -384,7 +550,7 @@ function Get-TableAndColumns {
         "DELETE" {
             $deleteRows = Get-DeleteCrudRows -SqlFragment $SqlFragment -CteNames $cteNames
             foreach ($dr in $deleteRows) {
-                [void]$results.Add($dr)
+                [void]$crudExtractList.Add($dr)
             }
         }
         "MERGE" {
@@ -393,12 +559,12 @@ function Get-TableAndColumns {
             foreach ($match in $m) {
                 $tableName = $match.Groups[2].Value.ToUpper()
                 if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
-                [void]$results.Add(@{
+                [void]$crudExtractList.Add(@{
                     TableName  = $tableName
                     ColumnName = "(ALL)"
                     Operation  = "C"
                 })
-                [void]$results.Add(@{
+                [void]$crudExtractList.Add(@{
                     TableName  = $tableName
                     ColumnName = "(ALL)"
                     Operation  = "U"
@@ -407,7 +573,7 @@ function Get-TableAndColumns {
         }
     }
 
-    return $results
+    return $crudExtractList
 }
 
 function Split-ByCommaRespectingParens {
@@ -501,6 +667,53 @@ function Test-SqlFunction {
     )
 
     return ($Name.ToUpper() -in $sqlFunctions)
+}
+
+function Normalize-OracleTableList {
+    param($Raw)
+
+    if ($null -eq $Raw) {
+        return ,[string[]]@()
+    }
+    if ($Raw -is [string]) {
+        return ,[string[]]@([string]$Raw)
+    }
+    if ($Raw -is [System.Collections.ArrayList]) {
+        if ($Raw.Count -eq 0) {
+            return ,[string[]]@()
+        }
+        $arr = [string[]]::new($Raw.Count)
+        for ($i = 0; $i -lt $Raw.Count; $i++) {
+            $arr[$i] = [string]$Raw[$i]
+        }
+        return ,$arr
+    }
+    return ,[string[]]@([string]$Raw)
+}
+
+function Normalize-CrudRowList {
+    param($Raw)
+
+    if ($null -eq $Raw) {
+        return ,[object[]]@()
+    }
+    if ($Raw -is [hashtable]) {
+        return ,[object[]]@($Raw)
+    }
+    if ($Raw -is [System.Collections.ArrayList]) {
+        if ($Raw.Count -eq 0) {
+            return ,[object[]]@()
+        }
+        $arr = [object[]]::new($Raw.Count)
+        for ($i = 0; $i -lt $Raw.Count; $i++) {
+            $arr[$i] = $Raw[$i]
+        }
+        return ,$arr
+    }
+    if ($Raw -is [object[]]) {
+        return ,$Raw
+    }
+    return ,[object[]]@($Raw)
 }
 
 function Get-FromTables {
@@ -855,7 +1068,7 @@ function ConvertFrom-OracleSqlFile {
     $extractCount = 0
 
     foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
-        $extracted = Get-TableAndColumns -SqlFragment $parseContent -OperationType $opType
+        $extracted = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $parseContent -OperationType $opType)
         $extractCount += $extracted.Count
 
         foreach ($item in $extracted) {
