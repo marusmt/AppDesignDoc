@@ -73,6 +73,44 @@ function Remove-SqlComments {
     return $sb.ToString()
 }
 
+function Mask-OracleSqlStringLiteralsForParse {
+    param([string]$Content)
+
+    $len = $Content.Length
+    $sb = [System.Text.StringBuilder]::new()
+    $inString = $false
+    $i = 0
+    while ($i -lt $len) {
+        $ch = $Content[$i]
+        if ($inString) {
+            if ($ch -eq [char]0x27 -and $i + 1 -lt $len -and $Content[$i + 1] -eq [char]0x27) {
+                [void]$sb.Append([char]0x27)
+                [void]$sb.Append([char]0x27)
+                $i += 2
+                continue
+            }
+            if ($ch -eq [char]0x27) {
+                $inString = $false
+                [void]$sb.Append([char]0x27)
+                $i++
+                continue
+            }
+            [void]$sb.Append(' ')
+            $i++
+            continue
+        }
+        if ($ch -eq [char]0x27) {
+            $inString = $true
+            [void]$sb.Append([char]0x27)
+            $i++
+            continue
+        }
+        [void]$sb.Append($ch)
+        $i++
+    }
+    return $sb.ToString()
+}
+
 function Get-OracleObjectInfo {
     param([string]$Content, [string]$FileName)
 
@@ -487,7 +525,18 @@ function Get-TableAndColumns {
 
                 if ($selectClause -eq '' -or $fromClause -eq '') { continue }
 
-                $tables = Normalize-OracleTableList (Get-FromTables -FromClause $fromClause -ExcludeNames $cteNames)
+                $tablesOuter = Normalize-OracleTableList (Get-FromTables -FromClause $fromClause -ExcludeNames $cteNames)
+                $tablesNested = Get-FromTablesFromNestedSelectsInSelectClause -SelectClause $selectClause -ExcludeNames $cteNames
+                $tablesMerged = [System.Collections.ArrayList]::new()
+                foreach ($t in $tablesOuter) { [void]$tablesMerged.Add($t) }
+                foreach ($nt in $tablesNested) {
+                    $exists = $false
+                    foreach ($t in $tablesMerged) {
+                        if ($t -eq $nt) { $exists = $true; break }
+                    }
+                    if (-not $exists) { [void]$tablesMerged.Add($nt) }
+                }
+                $tables = Normalize-OracleTableList $tablesMerged
                 $refInfo = Get-SelectColumnRefs -SelectClause $selectClause
 
                 foreach ($table in $tables) {
@@ -499,7 +548,7 @@ function Get-TableAndColumns {
                         })
                     }
                     else {
-                        $firstTable = $tables[0]
+                        $firstTable = if ($tablesOuter.Count -gt 0) { $tablesOuter[0] } else { $tables[0] }
                         $colsForTable = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
                         foreach ($colRef in $refInfo.Refs) {
                             if ($null -ne $colRef.TableName -and ($colRef.TableName -eq $table)) {
@@ -779,6 +828,59 @@ function Get-FromTables {
     }
 
     return $tables
+}
+
+function Get-FromTablesFromNestedSelectsInSelectClause {
+    param(
+        [string]$SelectClause,
+        [System.Collections.Generic.HashSet[string]]$ExcludeNames
+    )
+
+    $out = [System.Collections.ArrayList]::new()
+    if ($null -eq $SelectClause -or $SelectClause.Trim() -eq '') {
+        return ,[string[]]@()
+    }
+
+    $len = $SelectClause.Length
+    $i = 0
+    while ($i -lt $len) {
+        if ($SelectClause[$i] -eq '(' -and ($i + 1 -lt $len)) {
+            $sub = $SelectClause.Substring($i)
+            if ($sub -match '(?is)^\(\s*SELECT\b') {
+                $depth = 0
+                $inStr = $false
+                $j = $i
+                while ($j -lt $len) {
+                    $adv = Step-OracleSqlScanOneChar -Text $SelectClause -ScanPos $j -InString ([ref]$inStr) -Depth ([ref]$depth)
+                    $j += $adv
+                    if ($depth -eq 0 -and $j -gt $i) { break }
+                }
+                if ($depth -eq 0 -and $j -gt $i + 1) {
+                    $innerLen = $j - $i - 2
+                    if ($innerLen -gt 0) {
+                        $inner = $SelectClause.Substring($i + 1, $innerLen).Trim()
+                        if ($inner -match '(?is)^SELECT\b') {
+                            $nestedRows = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $inner -OperationType "SELECT")
+                            foreach ($nr in $nestedRows) {
+                                if ($nr.Operation -eq 'R' -and $null -ne $nr.TableName -and $nr.TableName -ne '') {
+                                    $dup = $false
+                                    foreach ($o in $out) {
+                                        if ($o -eq $nr.TableName) { $dup = $true; break }
+                                    }
+                                    if (-not $dup) { [void]$out.Add($nr.TableName) }
+                                }
+                            }
+                        }
+                    }
+                }
+                $i = $j
+                continue
+            }
+        }
+        $i++
+    }
+
+    return ,[string[]]@($out.ToArray())
 }
 
 function Get-SelectColumns {
@@ -1072,6 +1174,7 @@ function ConvertFrom-OracleSqlFile {
 
     $rawContent = Get-Content $FilePath -Raw -Encoding Default
     $content = Remove-SqlComments -Content $rawContent
+    $content = Mask-OracleSqlStringLiteralsForParse -Content $content
     $fileName = [System.IO.Path]::GetFileName($FilePath)
 
     $objectInfo = Get-OracleObjectInfo -Content $content -FileName $fileName
