@@ -178,6 +178,31 @@ function Step-OracleSqlScanOneChar {
     return 1
 }
 
+function Test-OracleFromClauseKeywordAt {
+    param(
+        [string]$Text,
+        [int]$ScanPos
+    )
+
+    if ($ScanPos -lt 0 -or $ScanPos + 3 -ge $Text.Length) {
+        return $false
+    }
+    $tailLen = [Math]::Min(8, $Text.Length - $ScanPos)
+    if ($tailLen -lt 4) {
+        return $false
+    }
+    if ($Text.Substring($ScanPos, $tailLen) -notmatch '(?i)^FROM\b') {
+        return $false
+    }
+    if ($ScanPos -gt 0) {
+        $prev = $Text[$ScanPos - 1]
+        if ([char]::IsLetterOrDigit($prev) -or $prev -eq '_' -or $prev -eq '$' -or $prev -eq '#') {
+            return $false
+        }
+    }
+    return $true
+}
+
 function Get-TableAndColumns {
     param([string]$SqlFragment, [string]$OperationType)
 
@@ -235,8 +260,7 @@ function Get-TableAndColumns {
                     if (-not $inString -and $depth -eq 0) {
                         $c0 = $text[$scanPos]
                         if ($c0 -eq 'F' -or $c0 -eq 'f') {
-                            $tailLen = [Math]::Min(8, $text.Length - $scanPos)
-                            if ($tailLen -ge 4 -and $text.Substring($scanPos, $tailLen) -match '(?i)^FROM\b') {
+                            if (Test-OracleFromClauseKeywordAt -Text $text -ScanPos $scanPos) {
                                 $fromStart = $scanPos
                                 break
                             }
