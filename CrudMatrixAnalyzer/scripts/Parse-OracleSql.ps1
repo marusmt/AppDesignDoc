@@ -678,7 +678,8 @@ function Normalize-OracleTableList {
     if ($Raw -is [string]) {
         return ,[string[]]@([string]$Raw)
     }
-    if ($Raw -is [System.Collections.ArrayList]) {
+    # ArrayList と、関数戻り値で PowerShell が展開した Object[] の両方を扱う（後者を [string] キャストすると空白区切り1文字列になる）
+    if ($Raw -is [System.Collections.IList]) {
         if ($Raw.Count -eq 0) {
             return ,[string[]]@()
         }
@@ -716,6 +717,14 @@ function Normalize-CrudRowList {
     return ,[object[]]@($Raw)
 }
 
+function Test-OraclePlSqlDynamicSqlVarTableName {
+    param([string]$Name)
+    if ($null -eq $Name -or $Name -eq '') {
+        return $false
+    }
+    return ($Name.ToUpper() -eq 'V_SQL')
+}
+
 function Get-FromTables {
     param(
         [string]$FromClause,
@@ -742,6 +751,12 @@ function Get-FromTables {
         $trimmed = $part.Trim()
         if ($trimmed -eq '') { continue }
         if ($trimmed.StartsWith('(')) { continue }
+        if ($trimmed -match '(?is)^TABLE\s*\(') {
+            continue
+        }
+        if ($trimmed -match '(?is)^v_sql\s+\S') {
+            continue
+        }
 
         $trimmed = $trimmed -replace '(?i)\bWHERE\b.*$', ''
         $trimmed = $trimmed -replace '(?i)\bON\b.*$', ''
@@ -750,6 +765,9 @@ function Get-FromTables {
 
         if ($trimmed -match '(?:([\w$]+)\.)?([\w$]+)(?:\s+([\w$]+))?') {
             $tblName = $Matches[2].ToUpper()
+            if (Test-OraclePlSqlDynamicSqlVarTableName -Name $tblName) {
+                continue
+            }
             $isKeyword = $tblName -in $sqlKeywords
             $isNumber = $tblName -match '^\d+$'
             $isFunc = Test-SqlFunction -Name $tblName
