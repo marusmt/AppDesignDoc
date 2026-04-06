@@ -16,6 +16,86 @@ function Remove-SqlCommentsForDdl {
     return $result
 }
 
+function Unescape-OracleDdlCommentString {
+    param([string]$Text)
+    if ($null -eq $Text) { return '' }
+    return $Text -replace "''", "'"
+}
+
+function Parse-OracleCommentStatements {
+    param([string]$Content)
+
+    $tableComments = @{}
+    $columnComments = @{}
+
+    $patternTable = '(?is)COMMENT\s+ON\s+TABLE\s+(?:(\w+)\.)?(\w+)\s+IS\s*''((?:[^'']|'')*?)''\s*;'
+    foreach ($m in [regex]::Matches($Content, $patternTable)) {
+        $schema = if ($m.Groups[1].Success) { $m.Groups[1].Value.ToUpper() } else { "" }
+        $tbl = $m.Groups[2].Value.ToUpper()
+        $txt = Unescape-OracleDdlCommentString $m.Groups[3].Value
+        $key = if ($schema -ne '') { "$schema.$tbl" } else { $tbl }
+        $tableComments[$key] = $txt
+    }
+
+    $patternCol = '(?is)COMMENT\s+ON\s+COLUMN\s+(?:(\w+)\.)?(\w+)\.(\w+)\s+IS\s*''((?:[^'']|'')*?)''\s*;'
+    foreach ($m in [regex]::Matches($Content, $patternCol)) {
+        $schema = if ($m.Groups[1].Success) { $m.Groups[1].Value.ToUpper() } else { "" }
+        $tbl = $m.Groups[2].Value.ToUpper()
+        $col = $m.Groups[3].Value.ToUpper()
+        $txt = Unescape-OracleDdlCommentString $m.Groups[4].Value
+        $key = if ($schema -ne '') { "$schema.$tbl|$col" } else { "$tbl|$col" }
+        $columnComments[$key] = $txt
+    }
+
+    return @{
+        TableComments  = $tableComments
+        ColumnComments = $columnComments
+    }
+}
+
+function Merge-DdlCommentsIntoTableDefinitions {
+    param(
+        [System.Collections.ArrayList]$TableDefinitions,
+        [hashtable]$TableComments,
+        [hashtable]$ColumnComments
+    )
+
+    foreach ($def in $TableDefinitions) {
+        $schema = if ($null -ne $def.Schema -and $def.Schema -ne '') { $def.Schema } else { "" }
+        $tbl = $def.TableName
+        $tblKey = if ($schema -ne '') { "$schema.$tbl" } else { $tbl }
+        $def.TableComment = if ($TableComments.ContainsKey($tblKey)) { $TableComments[$tblKey] }
+        elseif ($TableComments.ContainsKey($tbl)) { $TableComments[$tbl] } else { "" }
+
+        $ckFull = if ($schema -ne '') { "$schema.$tbl|$($def.ColumnName)" } else { "$tbl|$($def.ColumnName)" }
+        $ckShort = "$tbl|$($def.ColumnName)"
+        $def.ColumnComment = if ($ColumnComments.ContainsKey($ckFull)) { $ColumnComments[$ckFull] }
+        elseif ($ColumnComments.ContainsKey($ckShort)) { $ColumnComments[$ckShort] } else { "" }
+    }
+}
+
+function Merge-DdlCommentsIntoIndexDefinitions {
+    param(
+        [System.Collections.ArrayList]$IndexDefinitions,
+        [hashtable]$TableComments,
+        [hashtable]$ColumnComments
+    )
+
+    foreach ($def in $IndexDefinitions) {
+        $ts = if ($null -ne $def.TableSchema -and $def.TableSchema -ne '') { $def.TableSchema } else { "" }
+        $tbl = $def.TableName
+        $col = $def.ColumnName
+        $tblKey = if ($ts -ne '') { "$ts.$tbl" } else { $tbl }
+        $def.TableComment = if ($TableComments.ContainsKey($tblKey)) { $TableComments[$tblKey] }
+        elseif ($TableComments.ContainsKey($tbl)) { $TableComments[$tbl] } else { "" }
+
+        $ckFull = if ($ts -ne '') { "$ts.$tbl|$col" } else { "$tbl|$col" }
+        $ckShort = "$tbl|$col"
+        $def.ColumnComment = if ($ColumnComments.ContainsKey($ckFull)) { $ColumnComments[$ckFull] }
+        elseif ($ColumnComments.ContainsKey($ckShort)) { $ColumnComments[$ckShort] } else { "" }
+    }
+}
+
 function Parse-CreateTable {
     param([string]$Content)
 
@@ -108,18 +188,108 @@ function Extract-ColumnDefinitions {
             $hasDefault = if ($trimmed -match '(?i)\bDEFAULT\b') { "YES" } else { "NO" }
 
             [void]$columns.Add(@{
-                Schema      = $Schema
-                TableName   = $TableName
-                ColumnName  = $colName
-                DataType    = $fullType
-                Nullable    = $nullable
-                HasDefault  = $hasDefault
-                OrdinalPos  = $ordinalPos
+                Schema        = $Schema
+                TableName     = $TableName
+                ColumnName    = $colName
+                DataType      = $fullType
+                Nullable      = $nullable
+                HasDefault    = $hasDefault
+                OrdinalPos    = $ordinalPos
+                TableComment  = ""
+                ColumnComment = ""
             })
         }
     }
 
     return $columns
+}
+
+function Extract-PrimaryKeyDefinitionsFromTableBody {
+    param(
+        [string]$TableBody,
+        [string]$TableName,
+        [string]$Schema
+    )
+
+    $results = [System.Collections.ArrayList]::new()
+    $m = [regex]::Match($TableBody, '(?is)CONSTRAINT\s+(\w+)\s+PRIMARY\s+KEY\s*\(([^)]+)\)')
+    if ($m.Success) {
+        $pkName = $m.Groups[1].Value.ToUpper()
+        $colsRaw = $m.Groups[2].Value
+    }
+    else {
+        $m = [regex]::Match($TableBody, '(?is)\bPRIMARY\s+KEY\s*\(([^)]+)\)')
+        if (-not $m.Success) { return $results }
+        $pkName = "PK_$TableName"
+        $colsRaw = $m.Groups[1].Value
+    }
+
+    $colParts = $colsRaw -split ','
+    $colPos = 0
+    foreach ($part in $colParts) {
+        $col = $part.Trim() -replace '"', ''
+        $col = $col.ToUpper()
+        $col = $col -replace '\s+(ASC|DESC)\s*$', ''
+        if ($col -eq '') { continue }
+        $colPos++
+        [void]$results.Add(@{
+            IndexSchema    = ""
+            IndexName      = $pkName
+            TableSchema    = $Schema
+            TableName      = $TableName
+            ColumnName     = $col
+            ColumnPos      = $colPos
+            Uniqueness     = "UNIQUE"
+            DefinitionKind = "PK"
+            TableComment   = ""
+            ColumnComment  = ""
+        })
+    }
+
+    return $results
+}
+
+function Parse-PrimaryKeyConstraints {
+    param([string]$Content)
+
+    $results = [System.Collections.ArrayList]::new()
+    $cleaned = Remove-SqlCommentsForDdl -Content $Content
+
+    $headerPattern = '(?i)CREATE\s+(?:GLOBAL\s+TEMPORARY\s+)?TABLE\s+"?(?:(\w+)"?\."?)?(\w+)"?\s*\('
+    $headerMatches = [regex]::Matches($cleaned, $headerPattern)
+
+    foreach ($match in $headerMatches) {
+        $schema = if ($match.Groups[1].Success) { $match.Groups[1].Value.ToUpper() } else { "" }
+        $tableName = $match.Groups[2].Value.ToUpper()
+
+        $startPos = $match.Index + $match.Length
+        $depth = 1
+        $pos = $startPos
+        $found = $false
+
+        while ($pos -lt $cleaned.Length) {
+            $ch = $cleaned[$pos]
+            if ($ch -eq '(') { $depth++ }
+            elseif ($ch -eq ')') {
+                $depth--
+                if ($depth -eq 0) {
+                    $found = $true
+                    break
+                }
+            }
+            $pos++
+        }
+
+        if (-not $found) { continue }
+
+        $body = $cleaned.Substring($startPos, $pos - $startPos)
+        $pkRows = Extract-PrimaryKeyDefinitionsFromTableBody -TableBody $body -TableName $tableName -Schema $schema
+        foreach ($r in $pkRows) {
+            [void]$results.Add($r)
+        }
+    }
+
+    return $results
 }
 
 function Parse-CreateIndex {
@@ -189,13 +359,16 @@ function Parse-CreateIndex {
             $col = $col.Trim()
             if ($col -eq '') { continue }
             [void]$results.Add(@{
-                IndexSchema = $indexSchema
-                IndexName   = $indexName
-                TableSchema = $tableSchema
-                TableName   = $tableName
-                ColumnName  = $col
-                ColumnPos   = $colPos
-                Uniqueness  = $isUnique
+                IndexSchema    = $indexSchema
+                IndexName      = $indexName
+                TableSchema    = $tableSchema
+                TableName      = $tableName
+                ColumnName     = $col
+                ColumnPos      = $colPos
+                Uniqueness     = $isUnique
+                DefinitionKind = "INDEX"
+                TableComment   = ""
+                ColumnComment  = ""
             })
         }
     }
@@ -222,6 +395,8 @@ function Parse-TableDdlDirectory {
 
     $allTableDefs = [System.Collections.ArrayList]::new()
     $allIndexDefs = [System.Collections.ArrayList]::new()
+    $globalTableComments = @{}
+    $globalColumnComments = @{}
     $fileCount = 0
 
     foreach ($file in $files) {
@@ -230,6 +405,10 @@ function Parse-TableDdlDirectory {
 
         try {
             $content = Get-Content $file.FullName -Raw -Encoding Default
+
+            $cstmt = Parse-OracleCommentStatements -Content $content
+            foreach ($k in $cstmt.TableComments.Keys) { $globalTableComments[$k] = $cstmt.TableComments[$k] }
+            foreach ($k in $cstmt.ColumnComments.Keys) { $globalColumnComments[$k] = $cstmt.ColumnComments[$k] }
 
             $tableDefs = Parse-CreateTable -Content $content
             foreach ($def in $tableDefs) {
@@ -246,6 +425,18 @@ function Parse-TableDdlDirectory {
                     [void]$allIndexDefs.Add($def)
                 }
             }
+
+            $pkDefs = Parse-PrimaryKeyConstraints -Content $content
+            $pkSeen = @{}
+            foreach ($def in $pkDefs) {
+                if ($def.TableName -notin $ExcludeTables) {
+                    $sig = "$($def.TableName)|$($def.IndexName)|$($def.ColumnPos)|$($def.ColumnName)"
+                    if ($pkSeen.ContainsKey($sig)) { continue }
+                    $pkSeen[$sig] = $true
+                    $def.SourceFile = $file.Name
+                    [void]$allIndexDefs.Add($def)
+                }
+            }
         }
         catch {
             Write-Warning "[DDL] 解析エラー: $($file.FullName) - $($_.Exception.Message)"
@@ -254,11 +445,19 @@ function Parse-TableDdlDirectory {
 
     Write-Progress -Activity "DDL 解析中" -Completed
 
+    if ($allTableDefs.Count -gt 0) {
+        Merge-DdlCommentsIntoTableDefinitions -TableDefinitions $allTableDefs -TableComments $globalTableComments -ColumnComments $globalColumnComments
+    }
+    if ($allIndexDefs.Count -gt 0) {
+        Merge-DdlCommentsIntoIndexDefinitions -IndexDefinitions $allIndexDefs -TableComments $globalTableComments -ColumnComments $globalColumnComments
+    }
+    $pkDefCount = @($allIndexDefs | Where-Object { $_.DefinitionKind -eq 'PK' } | ForEach-Object { $_.IndexName } | Sort-Object -Unique).Count
+
     $tableCount = ($allTableDefs | ForEach-Object { $_.TableName } | Sort-Object -Unique).Count
     $columnCount = $allTableDefs.Count
     $indexCount = ($allIndexDefs | ForEach-Object { $_.IndexName } | Sort-Object -Unique).Count
 
-    Write-Host "[DDL] 解析完了: テーブル $tableCount 件, カラム $columnCount 件, インデックス $indexCount 件" -ForegroundColor Green
+    Write-Host "[DDL] 解析完了: テーブル $tableCount 件, カラム $columnCount 件, インデックス定義 $indexCount 件（主キー制約 $pkDefCount 件）" -ForegroundColor Green
 
     return @{
         TableDefinitions = $allTableDefs

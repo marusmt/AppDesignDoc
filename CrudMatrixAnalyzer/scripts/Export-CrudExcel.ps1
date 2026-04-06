@@ -26,8 +26,86 @@ function ConvertTo-FeatureHeader {
     return $FeatureName
 }
 
+function Get-TableCommentLookupFromDefinitions {
+    param([System.Collections.ArrayList]$TableDefinitions)
+
+    $map = @{}
+    if ($null -eq $TableDefinitions -or $TableDefinitions.Count -eq 0) { return $map }
+    foreach ($def in $TableDefinitions) {
+        $tn = $def.TableName
+        $tc = $def.TableComment
+        if (-not $map.ContainsKey($tn)) {
+            $map[$tn] = if ($null -ne $tc) { $tc } else { "" }
+        }
+        elseif (($map[$tn] -eq '' -or $null -eq $map[$tn]) -and $null -ne $tc -and $tc -ne '') {
+            $map[$tn] = $tc
+        }
+    }
+    return $map
+}
+
+function Get-ColumnCommentLookupFromDefinitions {
+    param([System.Collections.ArrayList]$TableDefinitions)
+
+    $map = @{}
+    if ($null -eq $TableDefinitions -or $TableDefinitions.Count -eq 0) { return $map }
+    foreach ($def in $TableDefinitions) {
+        $key = "$($def.TableName)|$($def.ColumnName)"
+        $cc = $def.ColumnComment
+        if (-not $map.ContainsKey($key)) {
+            $map[$key] = if ($null -ne $cc) { $cc } else { "" }
+        }
+        elseif (($map[$key] -eq '' -or $null -eq $map[$key]) -and $null -ne $cc -and $cc -ne '') {
+            $map[$key] = $cc
+        }
+    }
+    return $map
+}
+
+function Sort-StringArrayOrdinalIgnoreCase {
+    param([string[]]$Items)
+    if ($null -eq $Items -or $Items.Length -eq 0) {
+        return @()
+    }
+    $a = [string[]]::new($Items.Length)
+    [System.Array]::Copy($Items, $a, $Items.Length)
+    [System.Array]::Sort($a, [System.StringComparer]::OrdinalIgnoreCase)
+    return $a
+}
+
+function Sort-TableColumnPairKeysOrdinalIgnoreCase {
+    param([string[]]$PairKeys)
+    if ($null -eq $PairKeys -or $PairKeys.Length -eq 0) {
+        return @()
+    }
+    $rawArr = [object[]]::new($PairKeys.Length)
+    $kArr = [string[]]::new($PairKeys.Length)
+    for ($i = 0; $i -lt $PairKeys.Length; $i++) {
+        $rawArr[$i] = $PairKeys[$i]
+        $parts = [string]$PairKeys[$i] -split '\|', 2
+        $kArr[$i] = "{0}`0{1}" -f $parts[0].ToUpper(), $parts[1].ToUpper()
+    }
+    [System.Array]::Sort($kArr, $rawArr, [System.StringComparer]::OrdinalIgnoreCase)
+    return [string[]]$rawArr
+}
+
+function Get-ExcelSortString {
+    param($Value)
+    if ($null -eq $Value) { return '' }
+    try { return [string]$Value } catch { return '' }
+}
+
+function Get-ExcelSortInt32 {
+    param($Value)
+    if ($null -eq $Value) { return 0 }
+    try { return [System.Convert]::ToInt32($Value) } catch { return 0 }
+}
+
 function Build-CrudSummaryMatrix {
-    param([System.Collections.ArrayList]$CrudResults)
+    param(
+        [System.Collections.ArrayList]$CrudResults,
+        [System.Collections.ArrayList]$TableDefinitions = $null
+    )
 
     $featureSet = [System.Collections.Generic.HashSet[string]]::new()
     $tableSet = [System.Collections.Generic.HashSet[string]]::new()
@@ -49,8 +127,10 @@ function Build-CrudSummaryMatrix {
         }
     }
 
-    $features = $featureSet | Sort-Object
-    $tables = $tableSet | Sort-Object
+    # 機能名・テーブル名は Sort-Object 既定だと OS カルチャ依存になるため OrdinalIgnoreCase（Python の sorted(key=upper) と整合）
+    $features = Sort-StringArrayOrdinalIgnoreCase @([string[]]@($featureSet))
+    $tables = Sort-StringArrayOrdinalIgnoreCase @([string[]]@($tableSet))
+    $tableJaMap = Get-TableCommentLookupFromDefinitions -TableDefinitions $TableDefinitions
 
     $headerMap = [ordered]@{}
     foreach ($f in $features) {
@@ -67,7 +147,8 @@ function Build-CrudSummaryMatrix {
             Write-Host "  サマリー行構築中: $tableCount / $totalTables" -ForegroundColor Gray
         }
 
-        $row = [ordered]@{ "テーブル名" = $table }
+        $jaName = if ($tableJaMap.ContainsKey($table)) { $tableJaMap[$table] } else { "" }
+        $row = [ordered]@{ "テーブル名" = $table; "テーブル名(日本語)" = $jaName }
         foreach ($feature in $features) {
             $header = $headerMap[$feature]
             $key = "$table|$feature"
@@ -86,7 +167,10 @@ function Build-CrudSummaryMatrix {
 }
 
 function Build-CrudDetailMatrix {
-    param([System.Collections.ArrayList]$CrudResults)
+    param(
+        [System.Collections.ArrayList]$CrudResults,
+        [System.Collections.ArrayList]$TableDefinitions = $null
+    )
 
     $featureSet = [System.Collections.Generic.HashSet[string]]::new()
     $pairSet = [System.Collections.Generic.HashSet[string]]::new()
@@ -109,8 +193,10 @@ function Build-CrudDetailMatrix {
         }
     }
 
-    $features = $featureSet | Sort-Object
-    $tableColumnPairs = $pairSet | Sort-Object
+    $features = Sort-StringArrayOrdinalIgnoreCase @([string[]]@($featureSet))
+    $tableColumnPairs = Sort-TableColumnPairKeysOrdinalIgnoreCase @([string[]]@($pairSet))
+    $tableJaMap = Get-TableCommentLookupFromDefinitions -TableDefinitions $TableDefinitions
+    $colJaMap = Get-ColumnCommentLookupFromDefinitions -TableDefinitions $TableDefinitions
 
     $headerMap = [ordered]@{}
     foreach ($f in $features) {
@@ -131,9 +217,15 @@ function Build-CrudDetailMatrix {
         $table = $parts[0]
         $column = $parts[1]
 
+        $jaTable = if ($tableJaMap.ContainsKey($table)) { $tableJaMap[$table] } else { "" }
+        $ck = "$table|$column"
+        $jaCol = if ($colJaMap.ContainsKey($ck)) { $colJaMap[$ck] } else { "" }
+
         $row = [ordered]@{
-            "テーブル名" = $table
-            "項目名"     = $column
+            "テーブル名"       = $table
+            "テーブル名(日本語)" = $jaTable
+            "項目名"           = $column
+            "項目名(日本語)" = $jaCol
         }
 
         foreach ($feature in $features) {
@@ -185,15 +277,33 @@ function Build-TableDefSheet {
     param([System.Collections.ArrayList]$TableDefinitions)
 
     $rows = [System.Collections.ArrayList]::new()
-    foreach ($def in ($TableDefinitions | Sort-Object { $_.TableName }, { $_.OrdinalPos })) {
+    if ($null -eq $TableDefinitions -or $TableDefinitions.Count -eq 0) { return $rows }
+
+    $defs = @($TableDefinitions)
+    $n = $defs.Count
+    $kArr = [string[]]::new($n)
+    $rawArr = [object[]]::new($n)
+    for ($i = 0; $i -lt $n; $i++) {
+        $d = $defs[$i]
+        $rawArr[$i] = $d
+        $tn = (Get-ExcelSortString $d.TableName).ToUpper()
+        $op = Get-ExcelSortInt32 $d.OrdinalPos
+        $kArr[$i] = "{0}`0{1:D12}" -f $tn, $op
+    }
+    [System.Array]::Sort($kArr, $rawArr, [System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($def in $rawArr) {
+        $tJa = if ($null -ne $def.TableComment) { $def.TableComment } else { "" }
+        $cJa = if ($null -ne $def.ColumnComment) { $def.ColumnComment } else { "" }
         [void]$rows.Add([PSCustomObject][ordered]@{
-            "テーブル名" = $def.TableName
-            "No"         = $def.OrdinalPos
-            "カラム名"   = $def.ColumnName
-            "データ型"   = $def.DataType
-            "NULL許可"   = $def.Nullable
-            "DEFAULT"    = $def.HasDefault
-            "ソースファイル" = $def.SourceFile
+            "テーブル名"       = $def.TableName
+            "テーブル名(日本語)" = $tJa
+            "No"               = $def.OrdinalPos
+            "カラム名"         = $def.ColumnName
+            "カラム名(日本語)" = $cJa
+            "データ型"         = $def.DataType
+            "NULL許可"         = $def.Nullable
+            "DEFAULT"          = $def.HasDefault
+            "ソースファイル"   = $def.SourceFile
         })
     }
     return $rows
@@ -203,14 +313,36 @@ function Build-IndexDefSheet {
     param([System.Collections.ArrayList]$IndexDefinitions)
 
     $rows = [System.Collections.ArrayList]::new()
-    foreach ($def in ($IndexDefinitions | Sort-Object { $_.TableName }, { $_.IndexName }, { $_.ColumnPos })) {
+    if ($null -eq $IndexDefinitions -or $IndexDefinitions.Count -eq 0) { return $rows }
+
+    $defs = @($IndexDefinitions)
+    $n = $defs.Count
+    $kArr = [string[]]::new($n)
+    $rawArr = [object[]]::new($n)
+    for ($i = 0; $i -lt $n; $i++) {
+        $d = $defs[$i]
+        $rawArr[$i] = $d
+        $tn = (Get-ExcelSortString $d.TableName).ToUpper()
+        $kind = if ($null -eq $d.DefinitionKind -or $d.DefinitionKind -eq 'INDEX') { 1 } else { 0 }
+        $ix = (Get-ExcelSortString $d.IndexName).ToUpper()
+        $cp = Get-ExcelSortInt32 $d.ColumnPos
+        $kArr[$i] = "{0}`0{1}`0{2}`0{3:D8}" -f $tn, $kind, $ix, $cp
+    }
+    [System.Array]::Sort($kArr, $rawArr, [System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($def in $rawArr) {
+        $tJa = if ($null -ne $def.TableComment) { $def.TableComment } else { "" }
+        $cJa = if ($null -ne $def.ColumnComment) { $def.ColumnComment } else { "" }
+        $kindJa = if ($null -ne $def.DefinitionKind -and $def.DefinitionKind -eq 'PK') { "主キー" } else { "インデックス" }
         [void]$rows.Add([PSCustomObject][ordered]@{
-            "テーブル名"     = $def.TableName
-            "インデックス名" = $def.IndexName
-            "一意性"         = $def.Uniqueness
-            "カラム位置"     = $def.ColumnPos
-            "カラム名"       = $def.ColumnName
-            "ソースファイル" = $def.SourceFile
+            "テーブル名"       = $def.TableName
+            "テーブル名(日本語)" = $tJa
+            "定義種別"         = $kindJa
+            "インデックス名"   = $def.IndexName
+            "一意性"           = $def.Uniqueness
+            "カラム位置"       = $def.ColumnPos
+            "カラム名"         = $def.ColumnName
+            "カラム名(日本語)" = $cJa
+            "ソースファイル"   = $def.SourceFile
         })
     }
     return $rows
@@ -220,7 +352,21 @@ function Build-UnusedColumnsSheet {
     param([System.Collections.ArrayList]$UnusedColumns)
 
     $rows = [System.Collections.ArrayList]::new()
-    foreach ($item in ($UnusedColumns | Sort-Object { $_.TableName }, { $_.ColumnName })) {
+    if ($null -eq $UnusedColumns -or $UnusedColumns.Count -eq 0) { return $rows }
+
+    $defs = @($UnusedColumns)
+    $n = $defs.Count
+    $kArr = [string[]]::new($n)
+    $rawArr = [object[]]::new($n)
+    for ($i = 0; $i -lt $n; $i++) {
+        $d = $defs[$i]
+        $rawArr[$i] = $d
+        $tn = (Get-ExcelSortString $d.TableName).ToUpper()
+        $cn = (Get-ExcelSortString $d.ColumnName).ToUpper()
+        $kArr[$i] = "{0}`0{1}" -f $tn, $cn
+    }
+    [System.Array]::Sort($kArr, $rawArr, [System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in $rawArr) {
         [void]$rows.Add([PSCustomObject][ordered]@{
             "テーブル名" = $item.TableName
             "カラム名"   = $item.ColumnName
@@ -243,6 +389,9 @@ function Export-CrudExcelWithModule {
         [System.Collections.ArrayList]$UnusedColumns = $null
     )
 
+    $ddlForJa = $null
+    if ($null -ne $TableDefinitions -and $TableDefinitions.Count -gt 0) { $ddlForJa = $TableDefinitions }
+
     if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
         Write-Host "[Excel] ImportExcelモジュールをインストールします..." -ForegroundColor Yellow
         Install-Module ImportExcel -Force -Scope CurrentUser
@@ -260,7 +409,7 @@ function Export-CrudExcelWithModule {
 
     if ($CrudResults.Count -gt 0) {
         Write-Host "[Excel] サマリーシート作成中... ($($CrudResults.Count) 件)" -ForegroundColor Cyan
-        $summaryMatrix = Build-CrudSummaryMatrix -CrudResults $CrudResults
+        $summaryMatrix = Build-CrudSummaryMatrix -CrudResults $CrudResults -TableDefinitions $ddlForJa
         Write-Host "[Excel] サマリー構築完了: $($summaryMatrix.Count) 行 ($([int]$sw.Elapsed.TotalSeconds) 秒)" -ForegroundColor Cyan
         if ($summaryMatrix.Count -gt 0) {
             $pkg = $summaryMatrix | Export-Excel -Path $ExcelPath -WorksheetName $SummarySheetName `
@@ -270,8 +419,8 @@ function Export-CrudExcelWithModule {
             $ws.Row(1).Style.VerticalAlignment = [OfficeOpenXml.Style.ExcelVerticalAlignment]::Top
             $lastRow = $ws.Dimension.End.Row
             $lastCol = $ws.Dimension.End.Column
-            if ($lastCol -ge 2) {
-                $dataRange = [OfficeOpenXml.ExcelAddress]::new(2, 2, $lastRow, $lastCol)
+            if ($lastCol -ge 3) {
+                $dataRange = [OfficeOpenXml.ExcelAddress]::new(2, 3, $lastRow, $lastCol)
                 $cfC = $ws.ConditionalFormatting.AddContainsText($dataRange)
                 $cfC.Text = "C"; $cfC.Style.Fill.BackgroundColor.Color = [System.Drawing.Color]::LightGreen; $cfC.Style.Font.Color.Color = [System.Drawing.Color]::DarkGreen
                 $cfR = $ws.ConditionalFormatting.AddContainsText($dataRange)
@@ -289,7 +438,7 @@ function Export-CrudExcelWithModule {
 
         $sw.Restart()
         Write-Host "[Excel] 詳細シート作成中..." -ForegroundColor Cyan
-        $detailMatrix = Build-CrudDetailMatrix -CrudResults $CrudResults
+        $detailMatrix = Build-CrudDetailMatrix -CrudResults $CrudResults -TableDefinitions $ddlForJa
         Write-Host "[Excel] 詳細構築完了: $($detailMatrix.Count) 行 ($([int]$sw.Elapsed.TotalSeconds) 秒)" -ForegroundColor Cyan
         if ($detailMatrix.Count -gt 0) {
             $detailParams = @{
@@ -307,8 +456,8 @@ function Export-CrudExcelWithModule {
             $ws.Row(1).Style.VerticalAlignment = [OfficeOpenXml.Style.ExcelVerticalAlignment]::Top
             $lastRow = $ws.Dimension.End.Row
             $lastCol = $ws.Dimension.End.Column
-            if ($lastCol -ge 3) {
-                $dataRange = [OfficeOpenXml.ExcelAddress]::new(2, 3, $lastRow, $lastCol)
+            if ($lastCol -ge 5) {
+                $dataRange = [OfficeOpenXml.ExcelAddress]::new(2, 5, $lastRow, $lastCol)
                 $cfC = $ws.ConditionalFormatting.AddContainsText($dataRange)
                 $cfC.Text = "C"; $cfC.Style.Fill.BackgroundColor.Color = [System.Drawing.Color]::LightGreen; $cfC.Style.Font.Color.Color = [System.Drawing.Color]::DarkGreen
                 $cfR = $ws.ConditionalFormatting.AddContainsText($dataRange)
@@ -419,6 +568,9 @@ function Export-CrudExcelWithCOM {
         [System.Collections.ArrayList]$UnusedColumns = $null
     )
 
+    $ddlForJa = $null
+    if ($null -ne $TableDefinitions -and $TableDefinitions.Count -gt 0) { $ddlForJa = $TableDefinitions }
+
     $outputDir = [System.IO.Path]::GetDirectoryName($ExcelPath)
     if (-not (Test-Path $outputDir)) {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
@@ -441,11 +593,11 @@ function Export-CrudExcelWithCOM {
 
         if ($CrudResults.Count -gt 0) {
             Write-Host "[Excel/COM] サマリーシート作成中... ($($CrudResults.Count) 件)" -ForegroundColor Cyan
-            $summaryMatrix = Build-CrudSummaryMatrix -CrudResults $CrudResults
+            $summaryMatrix = Build-CrudSummaryMatrix -CrudResults $CrudResults -TableDefinitions $ddlForJa
             Write-Host "[Excel/COM] サマリー構築完了: $($summaryMatrix.Count) 行 ($([int]$sw.Elapsed.TotalSeconds) 秒)" -ForegroundColor Cyan
             if ($summaryMatrix.Count -gt 0) {
                 $baseSheet.Name = $SummarySheetName
-                Write-MatrixToSheet -Sheet $baseSheet -Data $summaryMatrix -ApplyCrudColoring
+                Write-MatrixToSheet -Sheet $baseSheet -Data $summaryMatrix -ApplyCrudColoring -CrudColorColumnStartIndex 2
                 $lastSheet = $baseSheet
                 $hasSheet = $true
                 Write-Host "[Excel/COM] サマリーシート書込完了 ($([int]$sw.Elapsed.TotalSeconds) 秒)" -ForegroundColor Cyan
@@ -453,12 +605,12 @@ function Export-CrudExcelWithCOM {
 
             $sw.Restart()
             Write-Host "[Excel/COM] 詳細シート作成中..." -ForegroundColor Cyan
-            $detailMatrix = Build-CrudDetailMatrix -CrudResults $CrudResults
+            $detailMatrix = Build-CrudDetailMatrix -CrudResults $CrudResults -TableDefinitions $ddlForJa
             Write-Host "[Excel/COM] 詳細構築完了: $($detailMatrix.Count) 行 ($([int]$sw.Elapsed.TotalSeconds) 秒)" -ForegroundColor Cyan
             if ($detailMatrix.Count -gt 0) {
                 $detailSheet = $workbook.Worksheets.Add([System.Reflection.Missing]::Value, $lastSheet)
                 $detailSheet.Name = $DetailSheetName
-                Write-MatrixToSheet -Sheet $detailSheet -Data $detailMatrix -ApplyCrudColoring
+                Write-MatrixToSheet -Sheet $detailSheet -Data $detailMatrix -ApplyCrudColoring -CrudColorColumnStartIndex 4
                 $lastSheet = $detailSheet
                 $hasSheet = $true
                 Write-Host "[Excel/COM] 詳細シート書込完了 ($([int]$sw.Elapsed.TotalSeconds) 秒)" -ForegroundColor Cyan
@@ -556,7 +708,8 @@ function Write-MatrixToSheet {
     param(
         $Sheet,
         [System.Collections.ArrayList]$Data,
-        [switch]$ApplyCrudColoring
+        [switch]$ApplyCrudColoring,
+        [int]$CrudColorColumnStartIndex = 1
     )
 
     if ($Data.Count -eq 0) { return }
@@ -597,10 +750,10 @@ function Write-MatrixToSheet {
     $headerRange.WrapText = $true
     $headerRange.VerticalAlignment = -4160
 
-    if ($ApplyCrudColoring -and $colCount -gt 1) {
+    if ($ApplyCrudColoring -and $colCount -gt $CrudColorColumnStartIndex) {
         Write-Host "  CRUD色付け中..." -ForegroundColor Gray
         for ($r = 1; $r -lt $rowCount; $r++) {
-            for ($c = 1; $c -lt $colCount; $c++) {
+            for ($c = $CrudColorColumnStartIndex; $c -lt $colCount; $c++) {
                 $val = $values[$r, $c]
                 if ($null -ne $val -and $val -ne '-') {
                     if ($val -match 'C') {

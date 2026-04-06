@@ -579,7 +579,8 @@ function Get-TableAndColumns {
             }
         }
         "UPDATE" {
-            $pattern = '(?i)UPDATE\s+(?:([\w$]+)\.)?([\w$]+)\s+SET\s+([\s\S]+?)(?:\s+WHERE\b|\s*;|\s*$)'
+            # 表名の直後に別名があってもよい（例: UPDATE UPD_TBL U SET ...）
+            $pattern = '(?i)UPDATE\s+(?:([\w$]+)\.)?([\w$]+)(?:\s+[\w$]+)?\s+SET\s+([\s\S]+?)(?:\s+WHERE\b|\s*;|\s*$)'
             $m = [regex]::Matches($SqlFragment, $pattern)
             foreach ($match in $m) {
                 $tableName = $match.Groups[2].Value.ToUpper()
@@ -1145,8 +1146,11 @@ function Get-SetColumns {
 
     foreach ($part in $parts) {
         $trimmed = $part.Trim()
-        if ($trimmed -match '^(\w+)\s*=') {
-            [void]$columns.Add($Matches[1].ToUpper())
+        # 別名付き UPDATE（例: SET U.COL1 = 'X'）では左辺が U.COL1 となるため、最後の識別子を列名とする
+        if ($trimmed -match '^([\w$]+(?:\.[\w$]+)*)\s*=') {
+            $lhs = [string]$Matches[1]
+            $lhsSegs = $lhs.Split('.')
+            [void]$columns.Add($lhsSegs[-1].ToUpper())
         }
     }
 
@@ -1166,6 +1170,24 @@ function Get-PackageBodySection {
     return $Content
 }
 
+function Get-OracleExecuteImmediateLiteralSqlFragments {
+    param([string]$Content)
+
+    $out = [System.Collections.ArrayList]::new()
+    if ([string]::IsNullOrEmpty($Content)) {
+        return $out
+    }
+    # マスク前の本文から EXECUTE IMMEDIATE '...' 内の SQL を取り出す（Python extract_dynamic_sql_literals に相当）
+    $pattern = "(?is)\bEXECUTE\s+IMMEDIATE\s+'((?:[^']|'')*)'"
+    foreach ($m in [regex]::Matches($Content, $pattern)) {
+        $inner = $m.Groups[1].Value -replace "''", "'"
+        if ($inner -match '(?i)\b(SELECT|INSERT|UPDATE|DELETE|MERGE)\b') {
+            [void]$out.Add($inner)
+        }
+    }
+    return $out
+}
+
 function ConvertFrom-OracleSqlFile {
     param(
         [string]$FilePath,
@@ -1173,8 +1195,8 @@ function ConvertFrom-OracleSqlFile {
     )
 
     $rawContent = Get-Content $FilePath -Raw -Encoding Default
-    $content = Remove-SqlComments -Content $rawContent
-    $content = Mask-OracleSqlStringLiteralsForParse -Content $content
+    $contentNoComments = Remove-SqlComments -Content $rawContent
+    $content = Mask-OracleSqlStringLiteralsForParse -Content $contentNoComments
     $fileName = [System.IO.Path]::GetFileName($FilePath)
 
     $objectInfo = Get-OracleObjectInfo -Content $content -FileName $fileName
@@ -1183,6 +1205,12 @@ function ConvertFrom-OracleSqlFile {
     if ($objectInfo.ObjectType -eq "PACKAGE") {
         $parseContent = Get-PackageBodySection -Content $content
     }
+
+    $dynamicSource = $contentNoComments
+    if ($objectInfo.ObjectType -eq "PACKAGE") {
+        $dynamicSource = Get-PackageBodySection -Content $contentNoComments
+    }
+    $dynamicSqlFragments = Get-OracleExecuteImmediateLiteralSqlFragments -Content $dynamicSource
 
     $results = [System.Collections.ArrayList]::new()
     $featureName = "$($objectInfo.ObjectType):$($objectInfo.ObjectName)"
@@ -1204,6 +1232,27 @@ function ConvertFrom-OracleSqlFile {
                 ColumnName  = $item.ColumnName
                 Operation   = $item.Operation
             })
+        }
+    }
+
+    foreach ($dynSql in $dynamicSqlFragments) {
+        foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
+            $extracted = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $dynSql -OperationType $opType)
+            $extractCount += $extracted.Count
+
+            foreach ($item in $extracted) {
+                [void]$results.Add(@{
+                    SourceType  = "Oracle"
+                    SourceFile  = $fileName
+                    ObjectType  = $objectInfo.ObjectType
+                    ObjectName  = $objectInfo.ObjectName
+                    ProcName    = $objectInfo.ObjectName
+                    FeatureName = $featureName
+                    TableName   = $item.TableName
+                    ColumnName  = $item.ColumnName
+                    Operation   = $item.Operation
+                })
+            }
         }
     }
 
