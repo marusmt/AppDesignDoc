@@ -1,4 +1,4 @@
-﻿@{
+@{
     # ===================================================
     # CRUD解析ツール 設定ファイル
     # ===================================================
@@ -7,28 +7,34 @@
     Oracle = @{
         # Oracle SQLファイルの格納ディレクトリ（SVNワーキングコピー等）
         # Package Body, Trigger, View, Function, Procedure を含む
-        SourcePath       = "C:\SVN\Oracle\packages"
+        SourcePath       = "~/App/CrudMatrixAnalyzer/test_data/package"
 
         # 対象ファイルパターン
-        FilePattern      = "*.sql"
+        FilePattern      = "pkg_*.sql"
 
         # 除外パターン（バックアップ等）
         ExcludePatterns  = @("*_bak*", "*_old*", "*_backup*")
 
         # 対象オブジェクト種別
         ObjectTypes      = @("PACKAGE BODY", "TRIGGER", "VIEW", "MATERIALIZED VIEW", "FUNCTION", "PROCEDURE")
+
+        # プロシージャ単位の抽出デバッグ（Run-CrudAnalysis.ps1 の -DebugOracle と同じ）
+        DebugLog         = $false
+
+        # WITH が別メソッド等で組み立てられ、同一フラグメントに WITH が無いときに FROM で使う CTE 名を明示（任意・大文字小文字無視）
+        KnownCteNames    = @()
     }
 
     # --- Oracle DDL（テーブル定義・インデックス定義）設定 ---
     Ddl = @{
         # テーブル定義SQLファイルの格納ディレクトリ
-        TableSourcePath  = "C:\SVN\Oracle\tables"
+        TableSourcePath  = "~/App/CrudMatrixAnalyzer/test_data/tables"
 
         # インデックス定義SQLファイルの格納ディレクトリ
-        IndexSourcePath  = "C:\SVN\Oracle\indexes"
+        IndexSourcePath  = "~/App/CrudMatrixAnalyzer/test_data/tables"
 
         # 対象ファイルパターン
-        FilePattern      = "*.sql"
+        FilePattern      = "create_*.sql"
 
         # 除外パターン
         ExcludePatterns  = @("*_bak*", "*_old*", "*_backup*")
@@ -40,7 +46,7 @@
     # --- VB.NET ソース設定 ---
     VbNet = @{
         # VB.NETソースのルートディレクトリ
-        SourcePath       = "C:\SVN\VbNet\src"
+        SourcePath       = "~/App/CrudMatrixAnalyzer/test_data/vbnet"
 
         # DACファイルパターン（ファイル名にdacを含むもの）
         DacFilePattern   = "*dac*.vb"
@@ -52,10 +58,10 @@
     # --- 出力設定 ---
     Output = @{
         # 中間JSON出力パス
-        JsonPath         = ".\output\crud_results.json"
+        JsonPath         = "..\..\test_data\output\crud_results.json"
 
         # Excel出力パス
-        ExcelPath        = ".\output\CrudMatrix.xlsx"
+        ExcelPath        = "..\..\test_data\output\CrudMatrix.xlsx"
 
         # サマリーシート名
         SummarySheetName = "テーブル×機能サマリー"
@@ -65,7 +71,7 @@
     }
 
     # --- 除外テーブル ---
-    ExcludeTables = @("DUAL", "PLAN_TABLE", "ALL_OBJECTS", "USER_OBJECTS", "ALL_TAB_COLUMNS")
+    ExcludeTables = @("DUAL", "PLAN_TABLE", "ALL_OBJECTS", "USER_OBJECTS", "ALL_TAB_COLUMNS", "TABLE")
 
     # --- 除外スキーマプレフィックス ---
     ExcludeSchemas = @("SYS", "SYSTEM", "DBMS_")

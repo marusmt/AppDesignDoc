@@ -216,6 +216,57 @@ function Step-OracleSqlScanOneChar {
     return 1
 }
 
+function Remove-OracleWindowOverClauses {
+    param([string]$Text)
+
+    if ($null -eq $Text -or $Text.Trim() -eq '') {
+        return $Text
+    }
+    $sb = New-Object System.Text.StringBuilder
+    $len = $Text.Length
+    $i = 0
+    $inStr = $false
+    while ($i -lt $len) {
+        $ch = $Text[$i]
+        if ($inStr) {
+            [void]$sb.Append($ch)
+            if ($ch -eq [char]0x27 -and $i + 1 -lt $len -and $Text[$i + 1] -eq [char]0x27) {
+                [void]$sb.Append($Text[$i + 1])
+                $i += 2
+                continue
+            }
+            if ($ch -eq [char]0x27) { $inStr = $false }
+            $i++
+            continue
+        }
+        if ($ch -eq [char]0x27) {
+            $inStr = $true
+            [void]$sb.Append($ch)
+            $i++
+            continue
+        }
+        $tail = $Text.Substring($i)
+        $m = [regex]::Match($tail, '(?i)^\bOVER\s*\(')
+        if ($m.Success) {
+            $openParen = $i + $m.Length - 1
+            $depth = 0
+            $inStr2 = $false
+            $j = $openParen
+            while ($j -lt $len) {
+                $adv = Step-OracleSqlScanOneChar -Text $Text -ScanPos $j -InString ([ref]$inStr2) -Depth ([ref]$depth)
+                $j += $adv
+                if ($depth -eq 0 -and $j -gt $openParen) { break }
+            }
+            $i = $j
+            [void]$sb.Append(' ')
+            continue
+        }
+        [void]$sb.Append($ch)
+        $i++
+    }
+    return $sb.ToString()
+}
+
 function Test-OracleFromClauseKeywordAt {
     param(
         [string]$Text,
@@ -353,7 +404,11 @@ function Get-OracleSqlFragmentToStatementEnd {
 }
 
 function Get-TableAndColumns {
-    param([string]$SqlFragment, [string]$OperationType)
+    param(
+        [string]$SqlFragment,
+        [string]$OperationType,
+        [string[]]$AdditionalCteNames = @()
+    )
 
     $SqlFragment = $SqlFragment -replace [char]0x3000, ' '
     $SqlFragment = $SqlFragment -replace '(?is)\bOPEN\s+[\w$"]+\s+FOR\s+(?!SELECT\b|WITH\b)([\w$]+(?:\.[\w$]+)*)\s+USING\b', ' '
@@ -365,6 +420,11 @@ function Get-TableAndColumns {
         $cteMatches = [regex]::Matches($SqlFragment, '(?i)([\w$]+)\s+AS\s*\(')
         foreach ($cm in $cteMatches) {
             [void]$cteNames.Add($cm.Groups[1].Value.ToUpper())
+        }
+    }
+    foreach ($extra in $AdditionalCteNames) {
+        if (-not [string]::IsNullOrWhiteSpace($extra)) {
+            [void]$cteNames.Add($extra.Trim().ToUpper())
         }
     }
 
@@ -395,7 +455,7 @@ function Get-TableAndColumns {
                 if ($tail.Trim() -eq '') { continue }
                 $trimTail = $tail.Trim().TrimEnd(';')
                 $innerSelectSql = 'SELECT ' + $trimTail
-                $selResults = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $innerSelectSql -OperationType "SELECT")
+                $selResults = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $innerSelectSql -OperationType "SELECT" -AdditionalCteNames $AdditionalCteNames)
                 $colNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
                 foreach ($sr in $selResults) {
                     if ($sr.Operation -eq 'R' -and $sr.ColumnName -ne '*' -and $sr.ColumnName -ne '(ALL)') {
@@ -522,6 +582,7 @@ function Get-TableAndColumns {
                 }
 
                 $fromClause = $text.Substring($fromBodyStart, $fromEnd - $fromBodyStart).Trim()
+                $selectClause = Remove-OracleWindowOverClauses -Text $selectClause
 
                 if ($selectClause -eq '' -or $fromClause -eq '') { continue }
 
@@ -861,7 +922,7 @@ function Get-FromTablesFromNestedSelectsInSelectClause {
                     if ($innerLen -gt 0) {
                         $inner = $SelectClause.Substring($i + 1, $innerLen).Trim()
                         if ($inner -match '(?is)^SELECT\b') {
-                            $nestedRows = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $inner -OperationType "SELECT")
+                            $nestedRows = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $inner -OperationType "SELECT" -AdditionalCteNames $AdditionalCteNames)
                             foreach ($nr in $nestedRows) {
                                 if ($nr.Operation -eq 'R' -and $null -ne $nr.TableName -and $nr.TableName -ne '') {
                                     $dup = $false
@@ -1191,6 +1252,7 @@ function Get-OracleExecuteImmediateLiteralSqlFragments {
 function ConvertFrom-OracleSqlFile {
     param(
         [string]$FilePath,
+        [string[]]$AdditionalCteNames = @(),
         [switch]$DebugLog
     )
 
@@ -1217,7 +1279,7 @@ function ConvertFrom-OracleSqlFile {
     $extractCount = 0
 
     foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
-        $extracted = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $parseContent -OperationType $opType)
+        $extracted = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $parseContent -OperationType $opType -AdditionalCteNames $AdditionalCteNames)
         $extractCount += $extracted.Count
 
         foreach ($item in $extracted) {
@@ -1237,7 +1299,7 @@ function ConvertFrom-OracleSqlFile {
 
     foreach ($dynSql in $dynamicSqlFragments) {
         foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
-            $extracted = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $dynSql -OperationType $opType)
+            $extracted = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $dynSql -OperationType $opType -AdditionalCteNames $AdditionalCteNames)
             $extractCount += $extracted.Count
 
             foreach ($item in $extracted) {
@@ -1271,6 +1333,7 @@ function ConvertFrom-OracleSqlDirectory {
         [string[]]$ExcludePatterns = @(),
         [string[]]$ExcludeTables = @(),
         [string[]]$ExcludeSchemas = @(),
+        [string[]]$AdditionalCteNames = @(),
         [switch]$DebugLog
     )
 
@@ -1295,7 +1358,7 @@ function ConvertFrom-OracleSqlDirectory {
         Write-Progress -Activity "Oracle SQL 解析中" -Status "$fileCount / $($files.Count): $($file.Name)" -PercentComplete (($fileCount / $files.Count) * 100)
 
         try {
-            $fileResults = ConvertFrom-OracleSqlFile -FilePath $file.FullName -DebugLog:$DebugLog
+            $fileResults = ConvertFrom-OracleSqlFile -FilePath $file.FullName -AdditionalCteNames $AdditionalCteNames -DebugLog:$DebugLog
 
             if ($DebugLog -and $fileResults.Count -gt 0) {
                 $byFeature = $fileResults | Group-Object FeatureName

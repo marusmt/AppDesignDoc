@@ -77,6 +77,11 @@ $tableDefs = [System.Collections.ArrayList]::new()
 $indexDefs = [System.Collections.ArrayList]::new()
 $unusedColumns = [System.Collections.ArrayList]::new()
 
+$oracleKnownCte = @()
+if ($null -ne $config.Oracle.KnownCteNames -and $config.Oracle.KnownCteNames.Count -gt 0) {
+    $oracleKnownCte = @($config.Oracle.KnownCteNames)
+}
+
 # --- Oracle SQL 解析 ---
 if (-not $SkipOracle) {
     Write-Host ""
@@ -93,6 +98,7 @@ if (-not $SkipOracle) {
             ExcludePatterns  = $config.Oracle.ExcludePatterns
             ExcludeTables    = $config.ExcludeTables
             ExcludeSchemas   = $config.ExcludeSchemas
+            AdditionalCteNames = $oracleKnownCte
         }
         if ($DebugOracle) { $oracleParams.DebugLog = $true }
         elseif ($null -ne $config.Oracle.DebugLog -and $config.Oracle.DebugLog -eq $true) { $oracleParams.DebugLog = $true }
@@ -122,7 +128,8 @@ if (-not $SkipVbNet) {
             -DacFilePattern $config.VbNet.DacFilePattern `
             -ExcludePatterns $config.VbNet.ExcludePatterns `
             -ExcludeTables $config.ExcludeTables `
-            -ExcludeSchemas $config.ExcludeSchemas
+            -ExcludeSchemas $config.ExcludeSchemas `
+            -KnownCteNames $oracleKnownCte
 
         foreach ($r in $vbnetResults) {
             [void]$allResults.Add($r)

@@ -145,7 +145,8 @@ function Assert-SqlParserLoaded {
 function ConvertFrom-VbNetDacFile {
     param(
         [string]$FilePath,
-        [System.Collections.Generic.HashSet[string]]$GlobalCteNames = $null
+        [System.Collections.Generic.HashSet[string]]$GlobalCteNames = $null,
+        [string[]]$KnownCteNames = @()
     )
 
     Assert-SqlParserLoaded
@@ -169,6 +170,11 @@ function ConvertFrom-VbNetDacFile {
             [void]$fileCteNames.Add($gCte)
         }
     }
+    foreach ($kn in $KnownCteNames) {
+        if (-not [string]::IsNullOrWhiteSpace($kn)) {
+            [void]$fileCteNames.Add($kn.Trim().ToUpper())
+        }
+    }
 
     foreach ($method in $classInfo.Methods) {
         $sqlStrings = Get-VbNetSqlStrings -Content $method.Content
@@ -176,7 +182,7 @@ function ConvertFrom-VbNetDacFile {
 
         foreach ($sql in $sqlStrings) {
             foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
-                $extracted = Get-TableAndColumns -SqlFragment $sql -OperationType $opType
+                $extracted = Get-TableAndColumns -SqlFragment $sql -OperationType $opType -AdditionalCteNames @($fileCteNames)
 
                 foreach ($item in $extracted) {
                     if ($fileCteNames.Count -gt 0 -and $fileCteNames.Contains($item.TableName)) { continue }
@@ -205,7 +211,8 @@ function ConvertFrom-VbNetDacDirectory {
         [string]$DacFilePattern = "*dac*.vb",
         [string[]]$ExcludePatterns = @(),
         [string[]]$ExcludeTables = @(),
-        [string[]]$ExcludeSchemas = @()
+        [string[]]$ExcludeSchemas = @(),
+        [string[]]$KnownCteNames = @()
     )
 
     Write-Host "[VB.NET] 解析開始: $SourcePath" -ForegroundColor Cyan
@@ -243,7 +250,7 @@ function ConvertFrom-VbNetDacDirectory {
         Write-Progress -Activity "VB.NET DAC 解析中" -Status "$fileCount / $($files.Count): $($file.Name)" -PercentComplete (($fileCount / $files.Count) * 100)
 
         try {
-            $fileResults = ConvertFrom-VbNetDacFile -FilePath $file.FullName -GlobalCteNames $globalCteNames
+            $fileResults = ConvertFrom-VbNetDacFile -FilePath $file.FullName -GlobalCteNames $globalCteNames -KnownCteNames $KnownCteNames
 
             foreach ($result in $fileResults) {
                 $skip = $false
