@@ -413,10 +413,12 @@ function Export-CrudExcelWithModule {
         Write-Host "[Excel] サマリー構築完了: $($summaryMatrix.Count) 行 ($([int]$sw.Elapsed.TotalSeconds) 秒)" -ForegroundColor Cyan
         if ($summaryMatrix.Count -gt 0) {
             $pkg = $summaryMatrix | Export-Excel -Path $ExcelPath -WorksheetName $SummarySheetName `
-                -AutoSize -FreezeTopRow -BoldTopRow -PassThru
+                -AutoSize -BoldTopRow -PassThru
             $ws = $pkg.Workbook.Worksheets[$SummarySheetName]
             $ws.Row(1).Style.WrapText = $true
             $ws.Row(1).Style.VerticalAlignment = [OfficeOpenXml.Style.ExcelVerticalAlignment]::Top
+            # Python(openpyxl) と同様: スクロール領域の左上を C2（1行目と A〜B 列を固定）
+            $ws.View.FreezePanes(2, 3)
             $lastRow = $ws.Dimension.End.Row
             $lastCol = $ws.Dimension.End.Column
             if ($lastCol -ge 3) {
@@ -445,7 +447,6 @@ function Export-CrudExcelWithModule {
                 Path          = $ExcelPath
                 WorksheetName = $DetailSheetName
                 AutoSize      = $true
-                FreezeTopRow  = $true
                 BoldTopRow    = $true
             }
             if ($hasBaseSheet) { $detailParams.Append = $true }
@@ -454,6 +455,8 @@ function Export-CrudExcelWithModule {
             $ws = $pkg.Workbook.Worksheets[$DetailSheetName]
             $ws.Row(1).Style.WrapText = $true
             $ws.Row(1).Style.VerticalAlignment = [OfficeOpenXml.Style.ExcelVerticalAlignment]::Top
+            # Python(openpyxl) と同様: スクロール領域の左上を E2（1行目と A〜D 列を固定）
+            $ws.View.FreezePanes(2, 5)
             $lastRow = $ws.Dimension.End.Row
             $lastCol = $ws.Dimension.End.Column
             if ($lastCol -ge 5) {
@@ -597,7 +600,7 @@ function Export-CrudExcelWithCOM {
             Write-Host "[Excel/COM] サマリー構築完了: $($summaryMatrix.Count) 行 ($([int]$sw.Elapsed.TotalSeconds) 秒)" -ForegroundColor Cyan
             if ($summaryMatrix.Count -gt 0) {
                 $baseSheet.Name = $SummarySheetName
-                Write-MatrixToSheet -Sheet $baseSheet -Data $summaryMatrix -ApplyCrudColoring -CrudColorColumnStartIndex 2
+                Write-MatrixToSheet -Sheet $baseSheet -Data $summaryMatrix -ApplyCrudColoring -CrudColorColumnStartIndex 2 -FreezePaneRow 2 -FreezePaneColumn 3
                 $lastSheet = $baseSheet
                 $hasSheet = $true
                 Write-Host "[Excel/COM] サマリーシート書込完了 ($([int]$sw.Elapsed.TotalSeconds) 秒)" -ForegroundColor Cyan
@@ -610,7 +613,7 @@ function Export-CrudExcelWithCOM {
             if ($detailMatrix.Count -gt 0) {
                 $detailSheet = $workbook.Worksheets.Add([System.Reflection.Missing]::Value, $lastSheet)
                 $detailSheet.Name = $DetailSheetName
-                Write-MatrixToSheet -Sheet $detailSheet -Data $detailMatrix -ApplyCrudColoring -CrudColorColumnStartIndex 4
+                Write-MatrixToSheet -Sheet $detailSheet -Data $detailMatrix -ApplyCrudColoring -CrudColorColumnStartIndex 4 -FreezePaneRow 2 -FreezePaneColumn 5
                 $lastSheet = $detailSheet
                 $hasSheet = $true
                 Write-Host "[Excel/COM] 詳細シート書込完了 ($([int]$sw.Elapsed.TotalSeconds) 秒)" -ForegroundColor Cyan
@@ -709,7 +712,9 @@ function Write-MatrixToSheet {
         $Sheet,
         [System.Collections.ArrayList]$Data,
         [switch]$ApplyCrudColoring,
-        [int]$CrudColorColumnStartIndex = 1
+        [int]$CrudColorColumnStartIndex = 1,
+        [int]$FreezePaneRow = 2,
+        [int]$FreezePaneColumn = 1
     )
 
     if ($Data.Count -eq 0) { return }
@@ -772,8 +777,10 @@ function Write-MatrixToSheet {
 
     $Sheet.UsedRange.Columns.AutoFit() | Out-Null
 
+    # Python(openpyxl) の freeze_panes と同じ考え方: 指定セルがスクロール領域の左上（例: C2=行2列3、E2=行2列5）
+    $Sheet.Activate() | Out-Null
     $Sheet.Application.ActiveWindow.FreezePanes = $false
-    $Sheet.Cells.Item(2, 1).Select() | Out-Null
+    $Sheet.Cells.Item($FreezePaneRow, $FreezePaneColumn).Select() | Out-Null
     $Sheet.Application.ActiveWindow.FreezePanes = $true
 }
 

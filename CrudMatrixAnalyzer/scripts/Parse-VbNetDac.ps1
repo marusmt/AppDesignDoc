@@ -61,6 +61,22 @@ function Get-VbNetSqlStrings {
         }
     }
 
+    # パターン3b: With ブロック内の .Append（StringBuilder 変数名省略形）
+    $withPattern = '(?is)With\s+(\w+)\s*\r?\n(.*?)End\s+With'
+    $withMatches = [regex]::Matches($Content, $withPattern)
+    foreach ($wm in $withMatches) {
+        $body = $wm.Groups[2].Value
+        $appendInWith = [regex]::Matches($body, '(?i)\.(?:Append|AppendLine|AppendFormat)\s*\(\s*"([^"]*)"\s*\)')
+        $parts = @()
+        foreach ($am in $appendInWith) {
+            $parts += $am.Groups[1].Value
+        }
+        $fullSql = ($parts -join " ").Trim()
+        if ($fullSql -match '(?i)(SELECT|INSERT|UPDATE|DELETE|MERGE)') {
+            [void]$sqlStrings.Add($fullSql)
+        }
+    }
+
     # パターン4: VB.NET の行継続文字（ _）を使った複数行文字列
     $lineContinuation = '(?i)"([^"]*)"[\s]*_\s*\r?\n\s*(?:&\s*)?"([^"]*)"'
     $lcMatches = [regex]::Matches($Content, $lineContinuation)
@@ -95,14 +111,14 @@ function Get-VbNetClassAndMethods {
         $result.ClassName = $Matches[1]
     }
 
-    $methodPattern = '(?i)(?:Public|Private|Friend|Protected)?\s*(?:Shared\s+)?(?:Overrides\s+)?(?:Function|Sub)\s+(\w+)'
+    $methodPattern = '(?i)(?:Public|Private|Friend|Protected)?\s*(?:Shared\s+)?(?:Overrides\s+)?((?<!End\s)Function|(?<!End\s)Sub)\s+(\w+)'
     $methodMatches = [regex]::Matches($Content, $methodPattern)
 
     for ($i = 0; $i -lt $methodMatches.Count; $i++) {
         $startIdx = $methodMatches[$i].Index
         $endIdx = if ($i + 1 -lt $methodMatches.Count) { $methodMatches[$i + 1].Index } else { $Content.Length }
         $methodContent = $Content.Substring($startIdx, $endIdx - $startIdx)
-        $methodName = $methodMatches[$i].Groups[1].Value
+        $methodName = $methodMatches[$i].Groups[2].Value
 
         [void]$result.Methods.Add(@{
             Name    = $methodName
