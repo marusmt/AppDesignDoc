@@ -77,6 +77,16 @@ function Get-VbNetSqlStrings {
         }
     }
 
+    # パターン3c: .Append(BuildWithCteBlock("...")) のように文字列リテラル以外を渡す Append（CTE 断片を合成して抽出）
+    $buildCteBlockPattern = '(?i)\.(?:Append|AppendLine|AppendFormat)\s*\(\s*BuildWithCteBlock\s*\(\s*"([^"]*)"\s*\)\s*\)'
+    foreach ($m in [regex]::Matches($Content, $buildCteBlockPattern)) {
+        $inner = $m.Groups[1].Value
+        $synthetic = "WITH T AS ( " + $inner + ") "
+        if ($synthetic -match '(?i)(SELECT|INSERT|UPDATE|DELETE|MERGE)') {
+            [void]$sqlStrings.Add($synthetic)
+        }
+    }
+
     # パターン4: VB.NET の行継続文字（ _）を使った複数行文字列
     $lineContinuation = '(?i)"([^"]*)"[\s]*_\s*\r?\n\s*(?:&\s*)?"([^"]*)"'
     $lcMatches = [regex]::Matches($Content, $lineContinuation)
