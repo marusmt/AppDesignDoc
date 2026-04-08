@@ -162,6 +162,7 @@ function ConvertFrom-VbNetDacFile {
     Assert-SqlParserLoaded
     $content = [System.IO.File]::ReadAllText($FilePath, [System.Text.UTF8Encoding]::new($false))
     $fileName = [System.IO.Path]::GetFileName($FilePath)
+    $fileBaseName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath)
     $classInfo = Get-VbNetClassAndMethods -Content $content
 
     $results = [System.Collections.ArrayList]::new()
@@ -186,9 +187,15 @@ function ConvertFrom-VbNetDacFile {
         }
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($classInfo.ClassName)) {
+        $vbFeatureName = "VB:$($classInfo.ClassName)"
+    }
+    else {
+        $vbFeatureName = "VB:$fileBaseName"
+    }
+
     foreach ($method in $classInfo.Methods) {
         $sqlStrings = Get-VbNetSqlStrings -Content $method.Content
-        $featureName = "VB:$($classInfo.ClassName).$($method.Name)"
 
         foreach ($sql in $sqlStrings) {
             foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
@@ -196,16 +203,18 @@ function ConvertFrom-VbNetDacFile {
 
                 foreach ($item in $extracted) {
                     if ($fileCteNames.Count -gt 0 -and $fileCteNames.Contains($item.TableName)) { continue }
+                    $objectName = if (-not [string]::IsNullOrWhiteSpace($classInfo.ClassName)) { $classInfo.ClassName } else { $fileBaseName }
                     [void]$results.Add(@{
                         SourceType  = "VB.NET"
                         SourceFile  = $fileName
                         ObjectType  = "DAC"
-                        ObjectName  = $classInfo.ClassName
-                        ProcName    = $method.Name
-                        FeatureName = $featureName
+                        ObjectName  = $objectName
+                        ProcName    = $fileBaseName
+                        FeatureName = $vbFeatureName
                         TableName   = $item.TableName
                         ColumnName  = $item.ColumnName
                         Operation   = $item.Operation
+                        DdlTableMatched = $true
                     })
                 }
             }
@@ -265,8 +274,12 @@ function ConvertFrom-VbNetDacDirectory {
             foreach ($result in $fileResults) {
                 $skip = $false
                 if ($result.TableName -in $ExcludeTables) { $skip = $true }
-                foreach ($schema in $ExcludeSchemas) {
-                    if ($result.TableName -like "$schema*") { $skip = $true }
+                if (-not $skip -and $result.TableName -match '\.') {
+                    $schemaPrefix = ($result.TableName.Split('.')[0]).ToUpper()
+                    foreach ($schema in $ExcludeSchemas) {
+                        if ([string]::IsNullOrWhiteSpace($schema)) { continue }
+                        if ($schemaPrefix -eq $schema.Trim().ToUpper()) { $skip = $true; break }
+                    }
                 }
                 if (-not $skip) {
                     [void]$allResults.Add($result)

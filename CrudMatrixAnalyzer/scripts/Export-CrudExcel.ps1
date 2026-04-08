@@ -254,6 +254,13 @@ function Build-RawDataSheet {
 
     foreach ($item in $CrudResults) {
         $i++
+        $dtm = $true
+        if ($item -is [hashtable] -and $item.ContainsKey('DdlTableMatched')) {
+            $dtm = $item['DdlTableMatched']
+        }
+        elseif ($null -ne $item.DdlTableMatched) {
+            $dtm = [bool]$item.DdlTableMatched
+        }
         [void]$rows.Add([PSCustomObject][ordered]@{
             "ソース種別"   = $item.SourceType
             "ソースファイル" = $item.SourceFile
@@ -264,6 +271,7 @@ function Build-RawDataSheet {
             "テーブル名"   = $item.TableName
             "項目名"       = $item.ColumnName
             "操作"         = $item.Operation
+            "DDL上テーブル一致" = if ($dtm) { "TRUE" } else { "FALSE" }
         })
         if ($i % 10000 -eq 0) {
             Write-Host "  生データ構築中: $i / $total" -ForegroundColor Gray

@@ -481,6 +481,10 @@ function Expand-SelectStar {
             if ($tableCols.Count -gt 0) {
                 $expandedCount++
                 foreach ($col in $tableCols) {
+                    $baseDtm = $true
+                    if ($item -is [hashtable] -and $item.ContainsKey('DdlTableMatched')) {
+                        $baseDtm = $item['DdlTableMatched']
+                    }
                     [void]$expanded.Add(@{
                         SourceType  = $item.SourceType
                         SourceFile  = $item.SourceFile
@@ -491,14 +495,21 @@ function Expand-SelectStar {
                         TableName   = $item.TableName
                         ColumnName  = $col.ColumnName
                         Operation   = "R"
+                        DdlTableMatched = $baseDtm
                     })
                 }
             }
             else {
+                if ($item -is [hashtable] -and -not $item.ContainsKey('DdlTableMatched')) {
+                    $item['DdlTableMatched'] = $true
+                }
                 [void]$expanded.Add($item)
             }
         }
         else {
+            if ($item -is [hashtable] -and -not $item.ContainsKey('DdlTableMatched')) {
+                $item['DdlTableMatched'] = $true
+            }
             [void]$expanded.Add($item)
         }
     }

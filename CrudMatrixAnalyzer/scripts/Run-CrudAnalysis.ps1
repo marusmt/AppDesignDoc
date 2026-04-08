@@ -45,6 +45,36 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = $PSScriptRoot
 
+function Set-DdlTableMatchedFlags {
+    param(
+        [System.Collections.ArrayList]$CrudResults,
+        [System.Collections.ArrayList]$TableDefinitions
+    )
+    if ($null -eq $CrudResults -or $CrudResults.Count -eq 0) { return }
+    $ddlKeys = @{}
+    foreach ($def in $TableDefinitions) {
+        $tn = $def.TableName
+        if ($null -ne $def.Schema -and $def.Schema -ne '') {
+            $ddlKeys["$($def.Schema.ToUpper()).$($tn.ToUpper())"] = $true
+        }
+        $ddlKeys[$tn.ToUpper()] = $true
+    }
+    foreach ($r in $CrudResults) {
+        $matched = $false
+        $tn = $r.TableName
+        if ($null -ne $tn -and $tn -ne '') {
+            if ($ddlKeys.Count -gt 0) {
+                $matched = $ddlKeys.ContainsKey($tn.ToUpper())
+                if (-not $matched -and $tn -match '\.') {
+                    $short = ($tn.Split('.')[-1]).ToUpper()
+                    $matched = $ddlKeys.ContainsKey($short)
+                }
+            }
+        }
+        $r['DdlTableMatched'] = $matched
+    }
+}
+
 # 関連スクリプトの読み込み
 . "$scriptDir\Parse-OracleSql.ps1"
 . "$scriptDir\Parse-VbNetDac.ps1"
@@ -191,6 +221,10 @@ if (-not $SkipDdl) {
         $allResults = Expand-SelectStar -CrudResults $allResults -TableDefinitions $tableDefs
     }
 
+    if ($allResults.Count -gt 0) {
+        Set-DdlTableMatchedFlags -CrudResults $allResults -TableDefinitions $tableDefs
+    }
+
     # カラム存在検証（DDL突合せ）
     if ($tableDefs.Count -gt 0 -and $allResults.Count -gt 0) {
         Write-Host ""
@@ -208,6 +242,9 @@ if (-not $SkipDdl) {
 }
 else {
     Write-Host "[DDL] スキップ" -ForegroundColor DarkGray
+    if ($allResults.Count -gt 0) {
+        Set-DdlTableMatchedFlags -CrudResults $allResults -TableDefinitions $tableDefs
+    }
 }
 
 # --- 結果サマリー ---
