@@ -910,7 +910,8 @@ function Get-OracleRoughFromClauseAfterFromKeyword {
         $tm = [regex]::Match($fromRest, "(?is)\b$term\b")
         if ($tm.Success -and $tm.Index -lt $cutLen) { $cutLen = $tm.Index }
     }
-    return $fromRest.Substring(0, [Math]::Min($cutLen, $fromRest.Length)).Trim()
+    $rough = $fromRest.Substring(0, [Math]::Min($cutLen, $fromRest.Length)).Trim()
+    return ($rough -replace '(?i)\s+AS\s+', ' ')
 }
 
 function Add-SimpleExistsSelectUnqualifiedWhereEqReads {
@@ -974,7 +975,7 @@ function Get-CrudRowsFromExistsSubqueriesInText {
     $searchPos = 0
     while ($searchPos -lt $t.Length) {
         $sub = $t.Substring($searchPos)
-        $m = [regex]::Match($sub, '(?i)\bEXISTS\s*\(')
+        $m = [regex]::Match($sub, '(?i)\b(?:NOT\s+)?EXISTS\s*\(')
         if (-not $m.Success) {
             break
         }
@@ -1218,6 +1219,7 @@ function Get-FromTables {
         $trimmed = $trimmed.Trim()
         if ($trimmed -eq '') { continue }
         $trimmed = $trimmed -replace '(?i)^(LEFT|RIGHT|FULL|CROSS|OUTER|NATURAL|INNER)\s+', ''
+        $trimmed = $trimmed -replace '(?i)\s+AS\s+', ' '
 
         if ($trimmed -match '(?:([\w$]+)\.)?([\w$]+)(?:\s+([\w$]+))?') {
             $firstId = [string]$Matches[1]
@@ -1270,6 +1272,7 @@ function Get-OracleFromAliasToTableMap {
         $trimmed = $trimmed.Trim()
         if ($trimmed -eq '') { continue }
         $trimmed = $trimmed -replace '(?i)^(LEFT|RIGHT|FULL|CROSS|OUTER|NATURAL|INNER)\s+', ''
+        $trimmed = $trimmed -replace '(?i)\s+AS\s+', ' '
 
         if ($trimmed -match '(?:([\w$]+)\.)?([\w$]+)(?:\s+([\w$]+))?') {
             $firstId = [string]$Matches[1]
@@ -1280,6 +1283,9 @@ function Get-OracleFromAliasToTableMap {
             $aliasTok = [string]$Matches[3]
             if ($aliasTok -and $aliasTok.Trim() -ne '') {
                 $aliasU = $aliasTok.Trim().ToUpper()
+                if ($aliasU -eq 'AS') {
+                    continue
+                }
                 if ($map.ContainsKey($aliasU)) {
                     if ($map[$aliasU] -eq $aliasU -and $tblName -ne $aliasU) {
                         $map[$aliasU] = $tblName
@@ -1308,6 +1314,7 @@ function Get-OracleFromAliasToTableMap {
         $trimmed = $trimmed.Trim()
         if ($trimmed -eq '') { continue }
         $trimmed = $trimmed -replace '(?i)^(LEFT|RIGHT|FULL|CROSS|OUTER|NATURAL|INNER)\s+', ''
+        $trimmed = $trimmed -replace '(?i)\s+AS\s+', ' '
 
         if ($trimmed -match '(?:([\w$]+)\.)?([\w$]+)(?:\s+([\w$]+))?') {
             $firstId = [string]$Matches[1]
@@ -1316,7 +1323,7 @@ function Get-OracleFromAliasToTableMap {
             }
             $tblName = $Matches[2].ToUpper()
             $aliasTok = [string]$Matches[3]
-            $hasAlias = ($aliasTok -and $aliasTok.Trim() -ne '')
+            $hasAlias = ($aliasTok -and $aliasTok.Trim() -ne '' -and $aliasTok.Trim().ToUpper() -ne 'AS')
             if (-not $hasAlias) {
                 if (-not $map.ContainsKey($tblName)) {
                     [void]$map.Add($tblName, $tblName)
