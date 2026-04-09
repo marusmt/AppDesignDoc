@@ -208,16 +208,56 @@ function Get-OraclePlSqlDeclaredVariableNames {
     return $names
 }
 
+function Mask-OracleExistsSubqueriesInPredicateText {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $Text
+    }
+    $t = $Text
+    $sb = [char[]]::new($t.Length)
+    for ($i = 0; $i -lt $t.Length; $i++) {
+        $sb[$i] = $t[$i]
+    }
+    $searchPos = 0
+    while ($searchPos -lt $t.Length) {
+        $sub = $t.Substring($searchPos)
+        $m = [regex]::Match($sub, '(?i)\b(?:NOT\s+)?EXISTS\s*\(')
+        if (-not $m.Success) {
+            break
+        }
+        $openParen = $searchPos + $m.Index + $m.Length - 1
+        $depth = 0
+        $inString = $false
+        $j = $openParen
+        while ($j -lt $t.Length) {
+            $adv = Step-OracleSqlScanOneChar -Text $t -ScanPos $j -InString ([ref]$inString) -Depth ([ref]$depth)
+            $j += $adv
+            if ($depth -eq 0 -and $j -gt $openParen) {
+                break
+            }
+        }
+        $maskStart = $searchPos + $m.Index
+        $maskEnd = $j
+        for ($k = $maskStart; $k -lt $maskEnd; $k++) {
+            $sb[$k] = ' '
+        }
+        $searchPos = $j
+    }
+    return [string]::new($sb)
+}
+
 function Get-DeleteCrudRows {
     param(
         [string]$SqlFragment,
         [System.Collections.Generic.HashSet[string]]$CteNames,
-        [System.Collections.Generic.HashSet[string]]$PlSqlDeclaredNames = $null
+        [System.Collections.Generic.HashSet[string]]$PlSqlDeclaredNames = $null,
+        [string[]]$AdditionalCteNames = @()
     )
 
     $out = [System.Collections.ArrayList]::new()
 
-    $pattern = '(?i)DELETE\s+(?:FROM\s+)?(?:([\w$]+)\.)?([\w$]+)(?:\s+(?!WHERE\b)([\w$]+))?'
+    $pattern = '(?i)\bDELETE\b\s+(?:FROM\s+)?(?:([\w$]+)\.)?([\w$]+)(?:\s+(?!WHERE\b)([\w$]+))?'
     foreach ($match in [regex]::Matches($SqlFragment, $pattern)) {
         $tableName = $match.Groups[2].Value.ToUpper()
         if ($tableName -eq '') { continue }
@@ -240,7 +280,8 @@ function Get-DeleteCrudRows {
                 else {
                     $whereText = $whereRaw.Trim().TrimEnd(';')
                 }
-                $whereRefs = Get-ColumnRefsFromPredicateText -Text $whereText
+                $whereForOuterRefs = Mask-OracleExistsSubqueriesInPredicateText -Text $whereText
+                $whereRefs = Get-ColumnRefsFromPredicateText -Text $whereForOuterRefs
                 $aliasMap = @{}
                 $aliasMap[$tableName] = $tableName
                 if ($aliasTok -ne '') {
@@ -268,6 +309,18 @@ function Get-DeleteCrudRows {
                         ColumnName = $wr.ColumnName
                         Operation  = "R"
                     })
+                }
+                foreach ($er in (Get-CrudRowsFromExistsSubqueriesInText -Text $whereText -AdditionalCteNames $AdditionalCteNames -PlSqlDeclaredNames $PlSqlDeclaredNames)) {
+                    $dup = $false
+                    foreach ($existing in $out) {
+                        if ($null -ne $existing.TableName -and $existing.TableName -eq $er.TableName -and $existing.ColumnName -eq $er.ColumnName -and $existing.Operation -eq $er.Operation) {
+                            $dup = $true
+                            break
+                        }
+                    }
+                    if (-not $dup) {
+                        [void]$out.Add($er)
+                    }
                 }
             }
         }
@@ -805,7 +858,7 @@ function Get-TableAndColumns {
         }
         "UPDATE" {
             # 表名の直後に別名があってもよい（例: UPDATE UPD_TBL U SET ...）
-            $pattern = '(?i)UPDATE\s+(?:([\w$]+)\.)?([\w$]+)(?:\s+([\w$]+))?\s+SET\s+'
+            $pattern = '(?i)\bUPDATE\b\s+(?:([\w$]+)\.)?([\w$]+)(?:\s+([\w$]+))?\s+SET\s+'
             $m = [regex]::Matches($SqlFragment, $pattern)
             foreach ($match in $m) {
                 $tableName = $match.Groups[2].Value.ToUpper()
@@ -839,7 +892,8 @@ function Get-TableAndColumns {
                     })
                 }
                 if ($null -ne $whereText -and $whereText -ne '') {
-                    $whereRefs = Get-ColumnRefsFromPredicateText -Text $whereText
+                    $whereForOuterRefs = Mask-OracleExistsSubqueriesInPredicateText -Text $whereText
+                    $whereRefs = Get-ColumnRefsFromPredicateText -Text $whereForOuterRefs
                     $aliasMap = @{}
                     $aliasMap[$tableName] = $tableName
                     if ($aliasTok -ne '') {
@@ -868,11 +922,18 @@ function Get-TableAndColumns {
                             Operation  = "R"
                         })
                     }
+                    foreach ($er in (Get-CrudRowsFromExistsSubqueriesInText -Text $whereText -AdditionalCteNames $AdditionalCteNames -PlSqlDeclaredNames $PlSqlDeclaredNames)) {
+                        [void]$crudExtractList.Add(@{
+                            TableName  = $er.TableName
+                            ColumnName = $er.ColumnName
+                            Operation  = $er.Operation
+                        })
+                    }
                 }
             }
         }
         "DELETE" {
-            $deleteRows = Get-DeleteCrudRows -SqlFragment $SqlFragment -CteNames $cteNames -PlSqlDeclaredNames $PlSqlDeclaredNames
+            $deleteRows = Get-DeleteCrudRows -SqlFragment $SqlFragment -CteNames $cteNames -PlSqlDeclaredNames $PlSqlDeclaredNames -AdditionalCteNames $AdditionalCteNames
             foreach ($dr in $deleteRows) {
                 [void]$crudExtractList.Add($dr)
             }
