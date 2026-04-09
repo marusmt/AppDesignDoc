@@ -894,6 +894,25 @@ function Get-TableAndColumns {
     return $crudExtractList
 }
 
+function Get-OracleRoughFromClauseAfterFromKeyword {
+    param([string]$SelectSql)
+
+    if ([string]::IsNullOrWhiteSpace($SelectSql)) {
+        return ''
+    }
+    $mFromKw = [regex]::Match($SelectSql, '(?is)\bFROM\s+')
+    if (-not $mFromKw.Success) {
+        return ''
+    }
+    $fromRest = $SelectSql.Substring($mFromKw.Index + $mFromKw.Length)
+    $cutLen = $fromRest.Length
+    foreach ($term in @('WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'INTERSECT', 'MINUS', 'FETCH')) {
+        $tm = [regex]::Match($fromRest, "(?is)\b$term\b")
+        if ($tm.Success -and $tm.Index -lt $cutLen) { $cutLen = $tm.Index }
+    }
+    return $fromRest.Substring(0, [Math]::Min($cutLen, $fromRest.Length)).Trim()
+}
+
 function Add-SimpleExistsSelectUnqualifiedWhereEqReads {
     param(
         [string]$InnerSelectSql,
@@ -909,6 +928,13 @@ function Add-SimpleExistsSelectUnqualifiedWhereEqReads {
         return ,[object[]]@()
     }
     $tbl = $Matches[2].ToUpper()
+    $roughFrom = Get-OracleRoughFromClauseAfterFromKeyword -SelectSql $s
+    if ($roughFrom -ne '') {
+        $amSimple = Get-OracleFromAliasToTableMap -FromClause $roughFrom
+        if ($amSimple.ContainsKey($tbl)) {
+            $tbl = [string]$amSimple[$tbl]
+        }
+    }
     if ($null -ne $CteNames -and $CteNames.Count -gt 0 -and $CteNames.Contains($tbl)) {
         return ,[object[]]@()
     }
@@ -969,10 +995,19 @@ function Get-CrudRowsFromExistsSubqueriesInText {
                 $innerTrim = $t.Substring($openParen + 1, $innerLen).Trim()
                 if ($innerTrim -match '(?is)^\s*SELECT\b') {
                     $subRows = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $innerTrim -OperationType "SELECT" -AdditionalCteNames $AdditionalCteNames -PlSqlDeclaredNames $PlSqlDeclaredNames)
+                    $roughFromExists = Get-OracleRoughFromClauseAfterFromKeyword -SelectSql $innerTrim
+                    $amExistsInner = Get-OracleFromAliasToTableMap -FromClause $roughFromExists
                     foreach ($sr in $subRows) {
-                        if ($null -ne $sr -and $null -ne $sr.TableName -and $sr.TableName -ne '') {
-                            [void]$out.Add($sr)
+                        if ($null -eq $sr -or $null -eq $sr.TableName -or $sr.TableName -eq '') { continue }
+                        $tnEx = [string]$sr.TableName
+                        if ($amExistsInner.ContainsKey($tnEx)) {
+                            $tnEx = [string]$amExistsInner[$tnEx]
                         }
+                        [void]$out.Add(@{
+                            TableName  = $tnEx
+                            ColumnName = $sr.ColumnName
+                            Operation  = $sr.Operation
+                        })
                     }
                     foreach ($sup in (Add-SimpleExistsSelectUnqualifiedWhereEqReads -InnerSelectSql $innerTrim -CteNames $cteForExists)) {
                         $dup = $false
