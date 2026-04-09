@@ -189,6 +189,23 @@ function Get-OraclePlSqlDeclaredVariableNames {
     if ([string]::IsNullOrWhiteSpace($PlSqlBlock)) {
         return $names
     }
+    $recordTypeNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($m in [regex]::Matches($PlSqlBlock, '(?im)\bTYPE\s+([\w\$]+)\s+IS\s+RECORD\b')) {
+        [void]$recordTypeNames.Add($m.Groups[1].Value.ToUpper())
+    }
+    if ($recordTypeNames.Count -gt 0) {
+        $skipFirstAsVar = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($w in @('TYPE', 'SUBTYPE', 'DECLARE', 'BEGIN', 'END', 'EXCEPTION', 'WHEN', 'IF', 'THEN', 'ELSE', 'ELSIF', 'LOOP', 'WHILE', 'FOR', 'OPEN', 'CLOSE', 'FETCH', 'EXIT', 'CONTINUE', 'GOTO', 'NULL', 'RAISE', 'RETURN', 'PRAGMA', 'FUNCTION', 'PROCEDURE', 'PACKAGE', 'CREATE', 'OR', 'REPLACE', 'BODY', 'USING', 'CURSOR', 'RECORD')) {
+            [void]$skipFirstAsVar.Add($w)
+        }
+        foreach ($m in [regex]::Matches($PlSqlBlock, '(?im)^\s*([\w\$]+)\s+([\w\$]+)\s*(?:;|:=)')) {
+            $firstU = $m.Groups[1].Value.ToUpper()
+            $secondU = $m.Groups[2].Value.ToUpper()
+            if (-not $recordTypeNames.Contains($secondU)) { continue }
+            if ($skipFirstAsVar.Contains($firstU)) { continue }
+            [void]$names.Add($firstU)
+        }
+    }
     foreach ($m in [regex]::Matches($PlSqlBlock, '(?im)^\s*([\w\$]+)\s+[\w\$\.]+%(?:TYPE|ROWTYPE)\b')) {
         [void]$names.Add($m.Groups[1].Value.ToUpper())
     }
