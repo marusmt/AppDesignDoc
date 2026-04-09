@@ -900,17 +900,113 @@ function Get-OracleRoughFromClauseAfterFromKeyword {
     if ([string]::IsNullOrWhiteSpace($SelectSql)) {
         return ''
     }
-    $mFromKw = [regex]::Match($SelectSql, '(?is)\bFROM\s+')
-    if (-not $mFromKw.Success) {
+    $text = $SelectSql
+    $selectMatches = [regex]::Matches($text, '(?i)\bSELECT\b')
+    $sm = $null
+    foreach ($match in $selectMatches) {
+        $selIdx = $match.Index
+        $j = $selIdx - 1
+        while ($j -ge 0 -and [char]::IsWhiteSpace($text[$j])) {
+            $j--
+        }
+        if ($j -ge 0 -and $text[$j] -eq ',') {
+            continue
+        }
+        $sm = $match
+        break
+    }
+    if ($null -eq $sm) {
         return ''
     }
-    $fromRest = $SelectSql.Substring($mFromKw.Index + $mFromKw.Length)
-    $cutLen = $fromRest.Length
-    foreach ($term in @('WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'INTERSECT', 'MINUS', 'FETCH')) {
-        $tm = [regex]::Match($fromRest, "(?is)\b$term\b")
-        if ($tm.Success -and $tm.Index -lt $cutLen) { $cutLen = $tm.Index }
+
+    $selectStart = $sm.Index + $sm.Length
+    $depth = 0
+    $inString = $false
+    $fromStart = -1
+    $scanPos = $selectStart
+    $nestedSelectFromSkipsRemaining = 0
+
+    while ($scanPos -lt $text.Length) {
+        if (-not $inString -and $depth -eq 0) {
+            if (Test-OracleSelectKeywordAt -Text $text -ScanPos $scanPos) {
+                $nestedSelectFromSkipsRemaining++
+            }
+            else {
+                $c0 = $text[$scanPos]
+                if ($c0 -eq 'F' -or $c0 -eq 'f') {
+                    if (Test-OracleFromClauseKeywordAt -Text $text -ScanPos $scanPos) {
+                        if ($nestedSelectFromSkipsRemaining -gt 0) {
+                            $nestedSelectFromSkipsRemaining--
+                        }
+                        else {
+                            $fromStart = $scanPos
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        $adv = Step-OracleSqlScanOneChar -Text $text -ScanPos $scanPos -InString ([ref]$inString) -Depth ([ref]$depth)
+        if ($depth -lt 0) { break }
+        $scanPos += $adv
     }
-    $rough = $fromRest.Substring(0, [Math]::Min($cutLen, $fromRest.Length)).Trim()
+
+    if ($fromStart -lt 0) {
+        return ''
+    }
+
+    $afterFrom = $fromStart + 4
+    if ($afterFrom -ge $text.Length) {
+        return ''
+    }
+
+    $depth = 0
+    $inString = $false
+    $fromBodyStart = $afterFrom
+    $fromEnd = $text.Length
+    $scanPos = $afterFrom
+
+    $terminators = @('WHERE', 'ORDER', 'GROUP', 'HAVING', 'UNION', 'INTERSECT', 'MINUS', 'FETCH', 'CONNECT', 'PIVOT', 'UNPIVOT', 'MODEL')
+
+    while ($scanPos -lt $text.Length) {
+        $ch = $text[$scanPos]
+        if (-not $inString -and $depth -eq 0) {
+            if ($scanPos -gt 0 -and $text[$scanPos - 1] -match '\s') {
+                if (Test-OracleForUpdateOrShareClauseAt -Text $text -ScanPos $scanPos) {
+                    $fromEnd = $scanPos
+                }
+            }
+            if ($fromEnd -ne $text.Length -and $fromEnd -eq $scanPos) { break }
+            foreach ($term in $terminators) {
+                $termLen = $term.Length
+                if (($scanPos + $termLen) -le $text.Length) {
+                    $candidate = $text.Substring($scanPos, $termLen)
+                    if ($candidate -match "(?i)^$term$") {
+                        if ($scanPos -gt 0 -and $text[$scanPos - 1] -match '\s') {
+                            if (($scanPos + $termLen) -ge $text.Length -or $text[$scanPos + $termLen] -match '[\s(;]') {
+                                $fromEnd = $scanPos
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+            if ($fromEnd -ne $text.Length -and $fromEnd -eq $scanPos) { break }
+            if ($ch -eq ';') {
+                $fromEnd = $scanPos
+                break
+            }
+        }
+        $oldPos = $scanPos
+        $adv = Step-OracleSqlScanOneChar -Text $text -ScanPos $scanPos -InString ([ref]$inString) -Depth ([ref]$depth)
+        if ($depth -lt 0) {
+            $fromEnd = $oldPos
+            break
+        }
+        $scanPos += $adv
+    }
+
+    $rough = $text.Substring($fromBodyStart, $fromEnd - $fromBodyStart).Trim()
     return ($rough -replace '(?i)\s+AS\s+', ' ')
 }
 
