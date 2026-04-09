@@ -878,7 +878,7 @@ function Get-TableAndColumns {
             }
         }
         "MERGE" {
-            $mergeRows = Get-MergeCrudRowsDetailed -SqlFragment $SqlFragment -CteNames $cteNames -PlSqlDeclaredNames $PlSqlDeclaredNames
+            $mergeRows = Get-MergeCrudRowsDetailed -SqlFragment $SqlFragment -CteNames $cteNames -PlSqlDeclaredNames $PlSqlDeclaredNames -AdditionalCteNames $AdditionalCteNames
             foreach ($mr in $mergeRows) {
                 $tn = $mr.TableName
                 if ($null -eq $tn -or [string]::IsNullOrWhiteSpace($tn)) { continue }
@@ -1703,11 +1703,12 @@ function Get-MergeCrudRowsDetailed {
     param(
         [string]$SqlFragment,
         [System.Collections.Generic.HashSet[string]]$CteNames,
-        [System.Collections.Generic.HashSet[string]]$PlSqlDeclaredNames = $null
+        [System.Collections.Generic.HashSet[string]]$PlSqlDeclaredNames = $null,
+        [string[]]$AdditionalCteNames = @()
     )
 
     $out = [System.Collections.ArrayList]::new()
-    $pattern = '(?i)MERGE\s+INTO\s+(?:([\w$]+)\.)?([\w$]+)(?:\s+([\w$]+))?\s+USING\s+'
+    $pattern = '(?i)MERGE\s+INTO\s+(?:([\w$]+)\.)?([\w$]+)(?:\s+(?:AS\s+)?([\w$]+))?\s+USING\s+'
     $allMatches = [regex]::Matches($SqlFragment, $pattern)
     $mi = 0
     foreach ($match in $allMatches) {
@@ -1722,39 +1723,114 @@ function Get-MergeCrudRowsDetailed {
         $mi++
         $thisOut = [System.Collections.ArrayList]::new()
         $tail = $mergeSeg.Substring($match.Length)
-        $onM = [regex]::Match($tail, '(?is)\bON\s*\(')
-        if ($onM.Success) {
-            $openIdx = $tail.IndexOf('(', $onM.Index)
-            $depth = 0
-            $inStr = $false
-            $j = $openIdx
-            $endIdx = -1
-            while ($j -lt $tail.Length) {
-                $ch = $tail[$j]
-                if ($inStr) {
-                    if ($ch -eq [char]0x27 -and $j + 1 -lt $tail.Length -and $tail[$j + 1] -eq [char]0x27) { $j += 2; continue }
-                    if ($ch -eq [char]0x27) { $inStr = $false }
-                    $j++
-                    continue
-                }
-                if ($ch -eq [char]0x27) { $inStr = $true; $j++; continue }
-                if ($ch -eq '(') { $depth++ }
-                elseif ($ch -eq ')') {
-                    $depth--
-                    if ($depth -eq 0) { $endIdx = $j; break }
-                }
-                $j++
+        $mergeAliasToPhysical = @{}
+        if (-not $mergeAliasToPhysical.ContainsKey($tgtTable)) {
+            $mergeAliasToPhysical[$tgtTable] = $tgtTable
+        }
+        if ($match.Groups[3].Success -and $match.Groups[3].Value -ne '') {
+            $tgtAliasTok = $match.Groups[3].Value.ToUpper()
+            if ($tgtAliasTok -ne 'AS') {
+                $mergeAliasToPhysical[$tgtAliasTok] = $tgtTable
             }
-            if ($endIdx -gt $openIdx) {
-                $onBody = $tail.Substring($openIdx + 1, $endIdx - $openIdx - 1)
-                $onRefs = Get-ColumnRefsFromPredicateText -Text $onBody
+        }
+        $mOn = [regex]::Match($tail, '(?is)\bON\s+')
+        if ($mOn.Success -and $mOn.Index -gt 0) {
+            $usingOnly = $tail.Substring(0, $mOn.Index).TrimEnd()
+            $u = $usingOnly.TrimStart()
+            if ($u.Length -gt 0 -and $u[0] -eq '(') {
+                $depthParen = 0
+                $inStrU = $false
+                $closeAt = -1
+                $ku = 0
+                while ($ku -lt $u.Length) {
+                    $chu = $u[$ku]
+                    if ($inStrU) {
+                        if ($chu -eq [char]0x27 -and $ku + 1 -lt $u.Length -and $u[$ku + 1] -eq [char]0x27) { $ku += 2; continue }
+                        if ($chu -eq [char]0x27) { $inStrU = $false }
+                        $ku++
+                        continue
+                    }
+                    if ($chu -eq [char]0x27) { $inStrU = $true; $ku++; continue }
+                    if ($chu -eq '(') { $depthParen++ }
+                    elseif ($chu -eq ')') {
+                        $depthParen--
+                        if ($depthParen -eq 0) { $closeAt = $ku; break }
+                    }
+                    $ku++
+                }
+                if ($closeAt -gt 0) {
+                    $innerSql = $u.Substring(1, $closeAt - 1).Trim()
+                    $afterSub = $u.Substring($closeAt + 1).TrimStart()
+                    $usingAliasName = $null
+                    $mAfterAlias = [regex]::Match($afterSub, '(?is)^(?:AS\s+)?([\w$]+)\s*$')
+                    if ($mAfterAlias.Success -and $mAfterAlias.Groups[1].Success -and $mAfterAlias.Groups[1].Value -ne '') {
+                        $usingAliasName = $mAfterAlias.Groups[1].Value.ToUpper()
+                    }
+                    $roughFrom = ''
+                    $mFromKw = [regex]::Match($innerSql, '(?is)\bFROM\s+')
+                    if ($mFromKw.Success) {
+                        $fromRest = $innerSql.Substring($mFromKw.Index + $mFromKw.Length)
+                        $cutLen = $fromRest.Length
+                        foreach ($term in @('WHERE', 'GROUP', 'ORDER', 'HAVING', 'UNION', 'INTERSECT', 'MINUS', 'FETCH')) {
+                            $tm = [regex]::Match($fromRest, "(?is)\b$term\b")
+                            if ($tm.Success -and $tm.Index -lt $cutLen) { $cutLen = $tm.Index }
+                        }
+                        $roughFrom = $fromRest.Substring(0, [Math]::Min($cutLen, $fromRest.Length)).Trim()
+                    }
+                    if ($roughFrom -ne '') {
+                        $amU = Get-OracleFromAliasToTableMap -FromClause $roughFrom
+                        foreach ($dek in $amU.Keys) {
+                            $mergeAliasToPhysical[$dek] = $amU[$dek]
+                        }
+                        $uniqFrom = @(Get-FromTables -FromClause $roughFrom -ExcludeNames $CteNames)
+                        if ($null -ne $usingAliasName -and $usingAliasName -ne '' -and $uniqFrom.Count -gt 0) {
+                            $mergeAliasToPhysical[$usingAliasName] = [string]$uniqFrom[0]
+                        }
+                    }
+                }
+            }
+            else {
+                if ($u -match '(?is)^(?:([\w$]+)\.)?([\w$]+)(?:\s+(?:AS\s+)?([\w$]+))?\s*$') {
+                    $usingPhys = $Matches[2].Value.ToUpper()
+                    if ($CteNames.Count -eq 0 -or -not $CteNames.Contains($usingPhys)) {
+                        if (-not $mergeAliasToPhysical.ContainsKey($usingPhys)) {
+                            $mergeAliasToPhysical[$usingPhys] = $usingPhys
+                        }
+                        if ($Matches[3].Success -and $Matches[3].Value -ne '') {
+                            $usal = $Matches[3].Value.ToUpper()
+                            if ($usal -ne 'AS') {
+                                $mergeAliasToPhysical[$usal] = $usingPhys
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if ($mOn.Success) {
+            $afterOnPos = $mOn.Index + $mOn.Length
+            $whenM = [regex]::Match($tail, '(?is)\bWHEN\s+(?:NOT\s+)?MATCHED\b')
+            $onEndPos = $tail.Length
+            if ($whenM.Success -and $whenM.Index -gt $afterOnPos) {
+                $onEndPos = $whenM.Index
+            }
+            $onBodyForRefs = $tail.Substring($afterOnPos, $onEndPos - $afterOnPos).Trim()
+            if ($onBodyForRefs -ne '') {
+                $onRefs = Get-ColumnRefsFromPredicateText -Text $onBodyForRefs
                 foreach ($r in $onRefs) {
                     $qual = if ($null -ne $r.TableName -and $r.TableName -ne '') { $r.TableName.ToUpper() } else { '' }
                     if ($null -ne $PlSqlDeclaredNames -and $PlSqlDeclaredNames.Count -gt 0 -and $qual -ne '' -and $PlSqlDeclaredNames.Contains($qual)) {
                         continue
                     }
                     $cn = $r.ColumnName.ToUpper()
-                    [void]$thisOut.Add(@{ TableName = $qual; ColumnName = $cn; Operation = 'R' })
+                    $physTbl = $qual
+                    if ($qual -ne '' -and $mergeAliasToPhysical.ContainsKey($qual)) {
+                        $physTbl = [string]$mergeAliasToPhysical[$qual]
+                    }
+                    $physU = ([string]$physTbl).Trim().ToUpper()
+                    if ($physU -eq 'DUAL' -or $physU.EndsWith('.DUAL')) {
+                        continue
+                    }
+                    [void]$thisOut.Add(@{ TableName = $physTbl; ColumnName = $cn; Operation = 'R' })
                 }
             }
         }
