@@ -17,6 +17,36 @@
     除外ファイルパターン配列
 #>
 
+$script:CrudParseProfileStats = $null
+
+function Reset-CrudParseProfileStats {
+    if ($env:CRUD_MATRIX_PARSE_PROFILE -ne '1') { return }
+    $script:CrudParseProfileStats = @{
+        GetTableAndColumnsCalls           = 0
+        SelectKeywordIterations           = 0
+        GetColumnRefsFromPredicateText    = 0
+        GetSelectColumnRefsScalarExtra    = 0
+        GetOracleSqlTailLengthCalls       = 0
+    }
+}
+
+function Bump-CrudParseProfile {
+    param([Parameter(Mandatory)][string]$Name)
+    if ($env:CRUD_MATRIX_PARSE_PROFILE -ne '1') { return }
+    if ($null -eq $script:CrudParseProfileStats) { return }
+    $script:CrudParseProfileStats[$Name] = [int]$script:CrudParseProfileStats[$Name] + 1
+}
+
+function Write-CrudParseProfileReport {
+    param([string]$Label)
+    if ($env:CRUD_MATRIX_PARSE_PROFILE -ne '1') { return }
+    if ($null -eq $script:CrudParseProfileStats) { return }
+    Write-Host "[ParseProfile] $Label" -ForegroundColor Cyan
+    foreach ($k in ($script:CrudParseProfileStats.Keys | Sort-Object)) {
+        Write-Host "  ${k}: $($script:CrudParseProfileStats[$k])" -ForegroundColor DarkCyan
+    }
+}
+
 function Remove-SqlComments {
     param([string]$Content)
 
@@ -165,6 +195,16 @@ function Get-OraclePlSqlDeclaredVariableNames {
     foreach ($m in [regex]::Matches($PlSqlBlock, '(?im)^\s*([\w\$]+)\s+(?:NUMBER|BINARY_FLOAT|BINARY_DOUBLE|INTEGER|PLS_INTEGER|BOOLEAN|DATE|TIMESTAMP|VARCHAR2|CHAR|NVARCHAR2|NCHAR|CLOB|BLOB|NCLOB)\b')) {
         [void]$names.Add($m.Groups[1].Value.ToUpper())
     }
+    foreach ($m in [regex]::Matches($PlSqlBlock, '(?is)\bFOR\s+([\w\$]+)\s+IN\s+')) {
+        $tail = $PlSqlBlock.Substring($m.Index + $m.Length).TrimStart()
+        if ($tail -match '^(?i)REVERSE\s+') {
+            $tail = ($tail -replace '^(?i)REVERSE\s+', '').TrimStart()
+        }
+        if ($tail.Length -gt 0 -and [char]::IsDigit($tail, 0)) {
+            continue
+        }
+        [void]$names.Add($m.Groups[1].Value.ToUpper())
+    }
     return $names
 }
 
@@ -272,6 +312,8 @@ function Get-OracleSqlTailLengthToSemicolonAtDepthZero {
         [string]$Text,
         [int]$StartPos
     )
+
+    Bump-CrudParseProfile -Name 'GetOracleSqlTailLengthCalls'
 
     if ($null -eq $Text -or $Text.Length -eq 0 -or $StartPos -lt 0 -or $StartPos -ge $Text.Length) {
         return 0
@@ -484,6 +526,8 @@ function Get-TableAndColumns {
         [System.Collections.Generic.HashSet[string]]$PlSqlDeclaredNames = $null
     )
 
+    Bump-CrudParseProfile -Name 'GetTableAndColumnsCalls'
+
     $SqlFragment = $SqlFragment -replace [char]0x3000, ' '
     $SqlFragment = $SqlFragment -replace '(?is)\bOPEN\s+[\w$"]+\s+FOR\s+(?!SELECT\b|WITH\b)([\w$]+(?:\.[\w$]+)*)\s+USING\b', ' '
 
@@ -568,6 +612,7 @@ function Get-TableAndColumns {
         "SELECT" {
             $selectMatches = [regex]::Matches($SqlFragment, '(?i)\bSELECT\b')
             foreach ($sm in $selectMatches) {
+                Bump-CrudParseProfile -Name 'SelectKeywordIterations'
                 $selIdx = $sm.Index
                 $j = $selIdx - 1
                 while ($j -ge 0 -and [char]::IsWhiteSpace($SqlFragment[$j])) {
@@ -1551,6 +1596,7 @@ function Get-SelectColumnRefs {
             }
             # スカラサブクエリ (SELECT ...) 内の WHERE / ON 等の列参照（例: WHERE C.ID = B.CAT_ID）
             if ($colExpr -match '(?is)\(\s*SELECT\b') {
+                Bump-CrudParseProfile -Name 'GetSelectColumnRefsScalarExtra'
                 foreach ($pr in (Get-ColumnRefsFromPredicateText -Text $colExpr)) {
                     [void]$refs.Add($pr)
                 }
@@ -1615,6 +1661,8 @@ function Get-SetColumns {
 
 function Get-ColumnRefsFromPredicateText {
     param([string]$Text)
+
+    Bump-CrudParseProfile -Name 'GetColumnRefsFromPredicateText'
 
     $refs = [System.Collections.ArrayList]::new()
     if ([string]::IsNullOrWhiteSpace($Text)) {
@@ -1791,6 +1839,8 @@ function ConvertFrom-OracleSqlFile {
 
     $plsqlDeclNames = Get-OraclePlSqlDeclaredVariableNames -PlSqlBlock $parseContent
 
+    Reset-CrudParseProfileStats
+
     $results = [System.Collections.ArrayList]::new()
     $featureName = "$($objectInfo.ObjectType):$($objectInfo.ObjectName)"
     $extractCount = 0
@@ -1839,6 +1889,8 @@ function ConvertFrom-OracleSqlFile {
         $hint = if ($extractCount -eq 0) { " (パーサで0件→SQL未検出の可能性)" } else { "" }
         Write-Host "[Oracle][Debug] 解析: $fileName | $($objectInfo.ObjectName) | 抽出=$extractCount | 本文=$($parseContent.Length) 文字$hint" -ForegroundColor DarkCyan
     }
+
+    Write-CrudParseProfileReport -Label "$fileName | $($objectInfo.ObjectName) | $($parseContent.Length) chars"
 
     return $results
 }
