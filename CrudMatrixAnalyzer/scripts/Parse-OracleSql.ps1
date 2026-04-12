@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Oracle SQL ソースファイルを解析し、CRUD操作情報を抽出する
 
@@ -477,6 +477,91 @@ function Test-OracleFromClauseKeywordAt {
     return $true
 }
 
+function Test-OracleWhereClauseKeywordAt {
+    param(
+        [string]$Text,
+        [int]$ScanPos
+    )
+
+    if ($ScanPos -lt 0 -or $ScanPos + 4 -ge $Text.Length) {
+        return $false
+    }
+    $tailLen = [Math]::Min(12, $Text.Length - $ScanPos)
+    if ($tailLen -lt 5) {
+        return $false
+    }
+    if ($Text.Substring($ScanPos, $tailLen) -notmatch '(?i)^WHERE\b') {
+        return $false
+    }
+    if ($ScanPos -gt 0) {
+        $prev = $Text[$ScanPos - 1]
+        if ([char]::IsLetterOrDigit($prev) -or $prev -eq '_' -or $prev -eq '$' -or $prev -eq '#') {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Split-OracleUpdateTailSetAndWhere {
+    param([string]$Tail)
+
+    if ([string]::IsNullOrWhiteSpace($Tail)) {
+        return @{ SetClause = ''; WhereText = $null }
+    }
+    $depth = 0
+    $inStr = $false
+    $whereIdx = -1
+    for ($i = 0; $i -lt $Tail.Length; $i++) {
+        $ch = $Tail[$i]
+        if ($inStr) {
+            if ($ch -eq [char]0x27 -and $i + 1 -lt $Tail.Length -and $Tail[$i + 1] -eq [char]0x27) {
+                $i++
+                continue
+            }
+            if ($ch -eq [char]0x27) {
+                $inStr = $false
+            }
+            continue
+        }
+        if ($ch -eq [char]0x27) {
+            $inStr = $true
+            continue
+        }
+        if ($ch -eq '(') {
+            $depth++
+        }
+        elseif ($ch -eq ')') {
+            $depth--
+            if ($depth -lt 0) {
+                $depth = 0
+            }
+        }
+        elseif ($depth -eq 0 -and (Test-OracleWhereClauseKeywordAt -Text $Tail -ScanPos $i)) {
+            $whereIdx = $i
+            break
+        }
+    }
+    if ($whereIdx -lt 0) {
+        $one = ($Tail -split ';')[0].Trim()
+        return @{ SetClause = $one; WhereText = $null }
+    }
+    $setClause = $Tail.Substring(0, $whereIdx).Trim()
+    $afterWhere = $Tail.Substring($whereIdx)
+    $wm = [regex]::Match($afterWhere, '(?is)^\s*WHERE\b\s*([\s\S]+)$')
+    $whereText = $null
+    if ($wm.Success) {
+        $whereRaw = $wm.Groups[1].Value
+        $semiPos = $whereRaw.IndexOf(';')
+        if ($semiPos -ge 0) {
+            $whereText = $whereRaw.Substring(0, $semiPos).Trim()
+        }
+        else {
+            $whereText = $whereRaw.Trim().TrimEnd(';')
+        }
+    }
+    return @{ SetClause = $setClause; WhereText = $whereText }
+}
+
 function Test-OracleSelectKeywordAt {
     param(
         [string]$Text,
@@ -882,23 +967,9 @@ function Get-TableAndColumns {
                 if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
                 $aliasTok = if ($match.Groups[3].Success -and $match.Groups[3].Value -ne '') { $match.Groups[3].Value.ToUpper() } else { '' }
                 $tail = $SqlFragment.Substring($match.Index + $match.Length)
-                $setClause = $tail
-                $whereText = $null
-                $wmUpd = [regex]::Match($tail, '(?is)^([\s\S]*?)\bWHERE\b([\s\S]+)$')
-                if ($wmUpd.Success) {
-                    $setClause = $wmUpd.Groups[1].Value
-                    $whereRaw = $wmUpd.Groups[2].Value
-                    $semiPos = $whereRaw.IndexOf(';')
-                    if ($semiPos -ge 0) {
-                        $whereText = $whereRaw.Substring(0, $semiPos).Trim()
-                    }
-                    else {
-                        $whereText = $whereRaw.Trim().TrimEnd(';')
-                    }
-                }
-                else {
-                    $setClause = ($tail -split ';')[0].Trim()
-                }
+                $swUpd = Split-OracleUpdateTailSetAndWhere -Tail $tail
+                $setClause = [string]$swUpd.SetClause
+                $whereText = $swUpd.WhereText
                 $columns = Get-SetColumns -SetClause $setClause
 
                 foreach ($col in $columns) {
@@ -908,6 +979,13 @@ function Get-TableAndColumns {
                         Operation  = "U"
                     })
                 }
+                $updReadMap = @{}
+                $updReadMap[$tableName] = $tableName
+                if ($aliasTok -ne '') {
+                    $updReadMap[$aliasTok] = $tableName
+                }
+                Add-UpdateSetRhsReadRows -SetClause $setClause -OuterAliasToTable $updReadMap -DefaultTableName $tableName `
+                    -CteNames $cteNames -PlSqlDeclaredNames $PlSqlDeclaredNames -AdditionalCteNames $AdditionalCteNames -OutList $crudExtractList
                 if ($null -ne $whereText -and $whereText -ne '') {
                     $whereForOuterRefs = Mask-OracleExistsSubqueriesInPredicateText -Text $whereText
                     $whereRefs = Get-ColumnRefsFromPredicateText -Text $whereForOuterRefs
@@ -1734,6 +1812,12 @@ function Get-SelectColumnRefs {
         }
 
         $colExprAgg = $colExpr -replace '[\r\n]+', ' '
+        if ($colExprAgg -match '(?i)\bCASE\b') {
+            foreach ($pr in (Get-ColumnRefsFromPredicateText -Text $colExprAgg)) {
+                [void]$refs.Add($pr)
+            }
+            continue
+        }
         if ($colExprAgg -match '(?i)(?<![\w$#])(?:COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(?:DISTINCT\s+)?([^)]*)\)') {
             $innerAgg = $Matches[1].Trim() -replace '(?i)^DISTINCT\s+', ''
             if ($innerAgg -eq '') {
@@ -1860,6 +1944,34 @@ function Get-SetColumns {
     param([string]$SetClause)
 
     $columns = [System.Collections.ArrayList]::new()
+    $st = if ($null -eq $SetClause) { '' } else { $SetClause.Trim() }
+    if ($st.Length -ge 2 -and $st[0] -eq '(') {
+        $eqPosT = Get-FirstEqualsAtParenDepthZero -Text $st
+        if ($eqPosT -gt 0) {
+            $jx = $eqPosT - 1
+            while ($jx -ge 0 -and [char]::IsWhiteSpace($st[$jx])) {
+                $jx--
+            }
+            if ($jx -ge 0 -and $st[$jx] -eq ')') {
+                $lhsInner = Get-OracleBalancedParenInner -Text $st -OpenIndex 0
+                if ($null -ne $lhsInner -and $lhsInner.Trim() -ne '') {
+                    foreach ($seg in (Split-ByCommaRespectingParens -Text $lhsInner)) {
+                        $cell = $seg.Trim()
+                        if ($cell -eq '') {
+                            continue
+                        }
+                        if ($cell -match '(?i)^([\w$]+(?:\.[\w$]+)*)') {
+                            $lhsSegs = $Matches[1].Split('.')
+                            [void]$columns.Add($lhsSegs[-1].ToUpper())
+                        }
+                    }
+                }
+            }
+        }
+        if ($columns.Count -gt 0) {
+            return $columns
+        }
+    }
     $parts = Split-ByCommaRespectingParens -Text $SetClause
 
     foreach ($part in $parts) {
@@ -1915,6 +2027,288 @@ function Get-ColumnRefsFromPredicateText {
     return $refs
 }
 
+function Get-OracleBalancedParenInner {
+    param(
+        [string]$Text,
+        [int]$OpenIndex
+    )
+    if ($null -eq $Text -or $OpenIndex -lt 0 -or $OpenIndex -ge $Text.Length) {
+        return $null
+    }
+    if ($Text[$OpenIndex] -ne '(') {
+        return $null
+    }
+    $depth = 0
+    $inStr = $false
+    for ($i = $OpenIndex; $i -lt $Text.Length; $i++) {
+        $ch = $Text[$i]
+        if ($inStr) {
+            if ($ch -eq [char]0x27 -and $i + 1 -lt $Text.Length -and $Text[$i + 1] -eq [char]0x27) {
+                $i++
+                continue
+            }
+            if ($ch -eq [char]0x27) {
+                $inStr = $false
+            }
+            continue
+        }
+        if ($ch -eq [char]0x27) {
+            $inStr = $true
+            continue
+        }
+        if ($ch -eq '(') {
+            $depth++
+        }
+        elseif ($ch -eq ')') {
+            $depth--
+            if ($depth -eq 0) {
+                return $Text.Substring($OpenIndex + 1, $i - $OpenIndex - 1).Trim()
+            }
+        }
+    }
+    return $null
+}
+
+function Get-FirstEqualsAtParenDepthZero {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return -1
+    }
+    $depth = 0
+    $inStr = $false
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $ch = $Text[$i]
+        if ($inStr) {
+            if ($ch -eq [char]0x27 -and $i + 1 -lt $Text.Length -and $Text[$i + 1] -eq [char]0x27) {
+                $i++
+                continue
+            }
+            if ($ch -eq [char]0x27) {
+                $inStr = $false
+            }
+            continue
+        }
+        if ($ch -eq [char]0x27) {
+            $inStr = $true
+            continue
+        }
+        if ($ch -eq '(') {
+            $depth++
+        }
+        elseif ($ch -eq ')') {
+            $depth--
+            if ($depth -lt 0) {
+                return -1
+            }
+        }
+        elseif ($ch -eq '=' -and $depth -eq 0) {
+            return $i
+        }
+    }
+    return -1
+}
+
+function Get-PhysicalTableNamesForMergeUsingSelect {
+    param(
+        [string]$InnerSelectSql,
+        [System.Collections.Generic.HashSet[string]]$CteNames,
+        [System.Collections.Generic.HashSet[string]]$PlSqlDeclaredNames,
+        [string[]]$AdditionalCteNames
+    )
+
+    if ([string]::IsNullOrWhiteSpace($InnerSelectSql)) {
+        return ,[string[]]@()
+    }
+    $frag = $InnerSelectSql.Trim()
+    if ($frag -notmatch '(?is)^SELECT\b') {
+        return ,[string[]]@()
+    }
+    $rows = @(Get-TableAndColumns -SqlFragment $frag -OperationType 'SELECT' -AdditionalCteNames $AdditionalCteNames -PlSqlDeclaredNames $PlSqlDeclaredNames)
+    $physNameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($r in $rows) {
+        if ($r.Operation -ne 'R') {
+            continue
+        }
+        $tn = [string]$r.TableName
+        if ([string]::IsNullOrWhiteSpace($tn)) {
+            continue
+        }
+        $tu = $tn.Trim().ToUpper()
+        if ($tu -eq 'DUAL' -or $tu.EndsWith('.DUAL')) {
+            continue
+        }
+        if ($null -ne $CteNames -and $CteNames.Count -gt 0 -and $CteNames.Contains($tu)) {
+            continue
+        }
+        [void]$physNameSet.Add($tu)
+    }
+    $nameList = [System.Collections.ArrayList]::new()
+    foreach ($pn in $physNameSet) {
+        [void]$nameList.Add($pn)
+    }
+    return ,[string[]]@($nameList.ToArray())
+}
+
+function Add-UpdateSetRhsReadRows {
+    param(
+        [string]$SetClause,
+        [hashtable]$OuterAliasToTable,
+        [string]$DefaultTableName,
+        [System.Collections.Generic.HashSet[string]]$CteNames,
+        [System.Collections.Generic.HashSet[string]]$PlSqlDeclaredNames,
+        [string[]]$AdditionalCteNames,
+        [System.Collections.ArrayList]$OutList
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SetClause)) {
+        return
+    }
+    $partsToProcess = [System.Collections.ArrayList]::new()
+    $stAll = $SetClause.Trim()
+    $tupleRhsDirect = $null
+    if ($stAll.Length -ge 2 -and $stAll[0] -eq '(') {
+        $depthT = 0
+        $inStrT = $false
+        for ($ti = 0; $ti -lt $stAll.Length; $ti++) {
+            $cht = $stAll[$ti]
+            if ($inStrT) {
+                if ($cht -eq [char]0x27 -and $ti + 1 -lt $stAll.Length -and $stAll[$ti + 1] -eq [char]0x27) {
+                    $ti++
+                    continue
+                }
+                if ($cht -eq [char]0x27) {
+                    $inStrT = $false
+                }
+                continue
+            }
+            if ($cht -eq [char]0x27) {
+                $inStrT = $true
+                continue
+            }
+            if ($cht -eq '(') {
+                $depthT++
+            }
+            elseif ($cht -eq ')') {
+                $depthT--
+            }
+            elseif ($cht -eq '=' -and $depthT -eq 0) {
+                $tj = $ti - 1
+                while ($tj -ge 0 -and [char]::IsWhiteSpace($stAll[$tj])) {
+                    $tj--
+                }
+                if ($tj -ge 0 -and $stAll[$tj] -eq ')') {
+                    $tupleRhsDirect = $stAll.Substring($ti + 1).Trim()
+                    break
+                }
+            }
+        }
+    }
+    if ($null -ne $tupleRhsDirect) {
+        [void]$partsToProcess.Add($tupleRhsDirect)
+    }
+    else {
+        foreach ($p0 in (Split-ByCommaRespectingParens -Text $SetClause)) {
+            [void]$partsToProcess.Add($p0)
+        }
+    }
+    foreach ($part in $partsToProcess) {
+        $t = $part.Trim()
+        if ($t -eq '') {
+            continue
+        }
+        $rhs = $t
+        if ($null -eq $tupleRhsDirect) {
+            $eqPos = Get-FirstEqualsAtParenDepthZero -Text $t
+            if ($eqPos -lt 0) {
+                continue
+            }
+            $rhs = $t.Substring($eqPos + 1).Trim()
+        }
+        if ($rhs -eq '') {
+            continue
+        }
+        $selFrag = $null
+        if ($rhs.Length -ge 2 -and $rhs[0] -eq '(') {
+            $inner = Get-OracleBalancedParenInner -Text $rhs -OpenIndex 0
+            if ($null -ne $inner -and $inner.Trim() -match '(?is)^SELECT\b') {
+                $selFrag = $inner.Trim()
+            }
+        }
+        if ($null -ne $selFrag) {
+            $roughInnerFrom = Get-OracleRoughFromClauseAfterFromKeyword -SelectSql $selFrag
+            $innerAm = Get-OracleFromAliasToTableMap -FromClause $roughInnerFrom
+            $innerRows = @(Get-TableAndColumns -SqlFragment $selFrag -OperationType 'SELECT' -AdditionalCteNames $AdditionalCteNames -PlSqlDeclaredNames $PlSqlDeclaredNames)
+            foreach ($ir in $innerRows) {
+                if ($ir.Operation -ne 'R') {
+                    continue
+                }
+                $tn = [string]$ir.TableName
+                if ([string]::IsNullOrWhiteSpace($tn)) {
+                    continue
+                }
+                $origQual = $tn.Trim().ToUpper()
+                $phys = $origQual
+                if ($null -ne $innerAm -and $innerAm.ContainsKey($origQual)) {
+                    $phys = [string]$innerAm[$origQual]
+                }
+                elseif ($null -ne $OuterAliasToTable -and $OuterAliasToTable.ContainsKey($origQual)) {
+                    $phys = [string]$OuterAliasToTable[$origQual]
+                }
+                else {
+                    $phys = $tn.Trim()
+                }
+                $tu = $phys.Trim().ToUpper()
+                if ($tu -eq 'DUAL' -or $tu.EndsWith('.DUAL')) {
+                    continue
+                }
+                if ($null -ne $CteNames -and $CteNames.Count -gt 0 -and $CteNames.Contains($tu)) {
+                    continue
+                }
+                if ($null -ne $PlSqlDeclaredNames -and $PlSqlDeclaredNames.Count -gt 0 -and $PlSqlDeclaredNames.Contains($tu)) {
+                    continue
+                }
+                $cn = [string]$ir.ColumnName
+                if ([string]::IsNullOrWhiteSpace($cn) -or $cn -eq '*' -or $cn -eq '(ALL)') {
+                    continue
+                }
+                if ($null -ne $PlSqlDeclaredNames -and $PlSqlDeclaredNames.Count -gt 0 -and $PlSqlDeclaredNames.Contains($cn.ToUpper())) {
+                    continue
+                }
+                [void]$OutList.Add(@{ TableName = $phys.Trim(); ColumnName = $cn.ToUpper(); Operation = 'R' })
+            }
+        }
+        else {
+            foreach ($r in (Get-ColumnRefsFromPredicateText -Text $rhs)) {
+                $qual = if ($null -ne $r.TableName -and $r.TableName -ne '') { $r.TableName.ToUpper() } else { '' }
+                if ($null -ne $PlSqlDeclaredNames -and $PlSqlDeclaredNames.Count -gt 0 -and $qual -ne '' -and $PlSqlDeclaredNames.Contains($qual)) {
+                    continue
+                }
+                $cn = $r.ColumnName.ToUpper()
+                if ($null -ne $PlSqlDeclaredNames -and $PlSqlDeclaredNames.Count -gt 0 -and $PlSqlDeclaredNames.Contains($cn)) {
+                    continue
+                }
+                $phys = $null
+                if ($qual -ne '') {
+                    if ($null -ne $OuterAliasToTable -and $OuterAliasToTable.ContainsKey($qual)) {
+                        $phys = [string]$OuterAliasToTable[$qual]
+                    }
+                    else {
+                        $phys = $qual
+                    }
+                }
+                else {
+                    $phys = $DefaultTableName
+                }
+                $physU = ([string]$phys).Trim().ToUpper()
+                if ($physU -eq 'DUAL' -or $physU.EndsWith('.DUAL')) {
+                    continue
+                }
+                [void]$OutList.Add(@{ TableName = $phys; ColumnName = $cn; Operation = 'R' })
+            }
+        }
+    }
+}
+
 function Get-MergeCrudRowsDetailed {
     param(
         [string]$SqlFragment,
@@ -1939,6 +2333,8 @@ function Get-MergeCrudRowsDetailed {
         $mi++
         $thisOut = [System.Collections.ArrayList]::new()
         $tail = $mergeSeg.Substring($match.Length)
+        $mergeUsingMultiPhysList = [string[]]@()
+        $mergeUsingAliasTok = $null
         $mergeAliasToPhysical = @{}
         if (-not $mergeAliasToPhysical.ContainsKey($tgtTable)) {
             $mergeAliasToPhysical[$tgtTable] = $tgtTable
@@ -1982,6 +2378,7 @@ function Get-MergeCrudRowsDetailed {
                     if ($mAfterAlias.Success -and $mAfterAlias.Groups[1].Success -and $mAfterAlias.Groups[1].Value -ne '') {
                         $usingAliasName = $mAfterAlias.Groups[1].Value.ToUpper()
                     }
+                    $mergeUsingAliasTok = $usingAliasName
                     $roughFrom = ''
                     $mFromKw = [regex]::Match($innerSql, '(?is)\bFROM\s+')
                     if ($mFromKw.Success) {
@@ -1998,9 +2395,14 @@ function Get-MergeCrudRowsDetailed {
                         foreach ($dek in $amU.Keys) {
                             $mergeAliasToPhysical[$dek] = $amU[$dek]
                         }
-                        $uniqFrom = @(Get-FromTables -FromClause $roughFrom -ExcludeNames $CteNames)
-                        if ($null -ne $usingAliasName -and $usingAliasName -ne '' -and $uniqFrom.Count -gt 0) {
-                            $mergeAliasToPhysical[$usingAliasName] = [string]$uniqFrom[0]
+                    }
+                    $physFromInner = @(Get-PhysicalTableNamesForMergeUsingSelect -InnerSelectSql $innerSql -CteNames $CteNames -PlSqlDeclaredNames $PlSqlDeclaredNames -AdditionalCteNames $AdditionalCteNames)
+                    if ($null -ne $usingAliasName -and $usingAliasName -ne '') {
+                        if ($physFromInner.Count -eq 1) {
+                            $mergeAliasToPhysical[$usingAliasName] = [string]$physFromInner[0]
+                        }
+                        elseif ($physFromInner.Count -gt 1) {
+                            $mergeUsingMultiPhysList = [string[]]@($physFromInner)
                         }
                     }
                 }
@@ -2038,15 +2440,28 @@ function Get-MergeCrudRowsDetailed {
                         continue
                     }
                     $cn = $r.ColumnName.ToUpper()
-                    $physTbl = $qual
-                    if ($qual -ne '' -and $mergeAliasToPhysical.ContainsKey($qual)) {
-                        $physTbl = [string]$mergeAliasToPhysical[$qual]
+                    $handledMulti = $false
+                    if ($qual -ne '' -and $null -ne $mergeUsingAliasTok -and $qual -eq $mergeUsingAliasTok -and $mergeUsingMultiPhysList.Count -gt 1) {
+                        foreach ($mtp in $mergeUsingMultiPhysList) {
+                            $physU2 = $mtp.Trim().ToUpper()
+                            if ($physU2 -eq 'DUAL' -or $physU2.EndsWith('.DUAL')) {
+                                continue
+                            }
+                            [void]$thisOut.Add(@{ TableName = $mtp.Trim(); ColumnName = $cn; Operation = 'R' })
+                        }
+                        $handledMulti = $true
                     }
-                    $physU = ([string]$physTbl).Trim().ToUpper()
-                    if ($physU -eq 'DUAL' -or $physU.EndsWith('.DUAL')) {
-                        continue
+                    if (-not $handledMulti) {
+                        $physTbl = $qual
+                        if ($qual -ne '' -and $mergeAliasToPhysical.ContainsKey($qual)) {
+                            $physTbl = [string]$mergeAliasToPhysical[$qual]
+                        }
+                        $physU = ([string]$physTbl).Trim().ToUpper()
+                        if ($physU -eq 'DUAL' -or $physU.EndsWith('.DUAL')) {
+                            continue
+                        }
+                        [void]$thisOut.Add(@{ TableName = $physTbl; ColumnName = $cn; Operation = 'R' })
                     }
-                    [void]$thisOut.Add(@{ TableName = $physTbl; ColumnName = $cn; Operation = 'R' })
                 }
             }
         }
@@ -2056,12 +2471,56 @@ function Get-MergeCrudRowsDetailed {
             foreach ($c in $setCols) {
                 [void]$thisOut.Add(@{ TableName = $tgtTable; ColumnName = $c; Operation = 'U' })
             }
+            $mergeReadMap = @{}
+            foreach ($mk in $mergeAliasToPhysical.Keys) {
+                $mergeReadMap[$mk] = $mergeAliasToPhysical[$mk]
+            }
+            Add-UpdateSetRhsReadRows -SetClause $rxUpd.Groups[1].Value -OuterAliasToTable $mergeReadMap -DefaultTableName $tgtTable `
+                -CteNames $CteNames -PlSqlDeclaredNames $PlSqlDeclaredNames -AdditionalCteNames $AdditionalCteNames -OutList $thisOut
         }
         $rxIns = [regex]::Match($mergeSeg, '(?is)\bWHEN\s+NOT\s+MATCHED\b\s+THEN\s+INSERT\s*\(([^)]+)\)')
         if ($rxIns.Success) {
             $insCols = ($rxIns.Groups[1].Value -split ',') | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ -ne '' }
             foreach ($c in $insCols) {
                 [void]$thisOut.Add(@{ TableName = $tgtTable; ColumnName = $c; Operation = 'C' })
+            }
+            $tailFromIns = $mergeSeg.Substring($rxIns.Index + $rxIns.Length)
+            $mv = [regex]::Match($tailFromIns, '(?is)^\s*VALUES\s*\(')
+            if ($mv.Success) {
+                $absOpen = $rxIns.Index + $rxIns.Length + $mv.Index + $mv.Length - 1
+                $valsInner = Get-OracleBalancedParenInner -Text $mergeSeg -OpenIndex $absOpen
+                if ($null -ne $valsInner -and $valsInner.Trim() -ne '') {
+                    $valRefs = Get-ColumnRefsFromPredicateText -Text $valsInner
+                    foreach ($vr in $valRefs) {
+                        $vqual = if ($null -ne $vr.TableName -and $vr.TableName -ne '') { $vr.TableName.ToUpper() } else { '' }
+                        if ($null -ne $PlSqlDeclaredNames -and $PlSqlDeclaredNames.Count -gt 0 -and $vqual -ne '' -and $PlSqlDeclaredNames.Contains($vqual)) {
+                            continue
+                        }
+                        $vcn = $vr.ColumnName.ToUpper()
+                        $vhandled = $false
+                        if ($vqual -ne '' -and $null -ne $mergeUsingAliasTok -and $vqual -eq $mergeUsingAliasTok -and $mergeUsingMultiPhysList.Count -gt 1) {
+                            foreach ($mtp in $mergeUsingMultiPhysList) {
+                                $physU3 = $mtp.Trim().ToUpper()
+                                if ($physU3 -eq 'DUAL' -or $physU3.EndsWith('.DUAL')) {
+                                    continue
+                                }
+                                [void]$thisOut.Add(@{ TableName = $mtp.Trim(); ColumnName = $vcn; Operation = 'R' })
+                            }
+                            $vhandled = $true
+                        }
+                        if (-not $vhandled) {
+                            $vphys = $vqual
+                            if ($vqual -ne '' -and $mergeAliasToPhysical.ContainsKey($vqual)) {
+                                $vphys = [string]$mergeAliasToPhysical[$vqual]
+                            }
+                            $vphysU = ([string]$vphys).Trim().ToUpper()
+                            if ($vphysU -eq 'DUAL' -or $vphysU.EndsWith('.DUAL')) {
+                                continue
+                            }
+                            [void]$thisOut.Add(@{ TableName = $vphys; ColumnName = $vcn; Operation = 'R' })
+                        }
+                    }
+                }
             }
         }
         if ($thisOut.Count -eq 0) {

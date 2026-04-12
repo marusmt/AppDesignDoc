@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     VB.NET DACファイルを解析し、CRUD操作情報を抽出する
 
