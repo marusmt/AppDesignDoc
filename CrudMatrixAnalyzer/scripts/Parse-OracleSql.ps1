@@ -261,6 +261,40 @@ function Mask-OracleExistsSubqueriesInPredicateText {
         }
         $searchPos = $j
     }
+    # IN (SELECT ...) / NOT IN (SELECT ...) もマスクする（括弧内のみ）
+    $searchPos = 0
+    while ($searchPos -lt $t.Length) {
+        $sub = $t.Substring($searchPos)
+        $m = [regex]::Match($sub, '(?i)\b(?:NOT\s+)?IN\s*\(')
+        if (-not $m.Success) {
+            break
+        }
+        $openParen = $searchPos + $m.Index + $m.Length - 1
+        # 括弧内が SELECT で始まる場合のみマスク対象
+        $innerStart = $openParen + 1
+        if ($innerStart -lt $t.Length) {
+            $innerHead = $t.Substring($innerStart).TrimStart()
+            if ($innerHead -notmatch '(?i)^SELECT\b') {
+                $searchPos = $searchPos + $m.Index + 1
+                continue
+            }
+        }
+        $depth = 0
+        $inString = $false
+        $j = $openParen
+        while ($j -lt $t.Length) {
+            $adv = Step-OracleSqlScanOneChar -Text $t -ScanPos $j -InString ([ref]$inString) -Depth ([ref]$depth)
+            $j += $adv
+            if ($depth -eq 0 -and $j -gt $openParen) {
+                break
+            }
+        }
+        # ( から ) までをマスク（IN キーワード自体は残す）
+        for ($k = $openParen; $k -lt $j; $k++) {
+            $sb[$k] = ' '
+        }
+        $searchPos = $j
+    }
     return [string]::new($sb)
 }
 
@@ -703,13 +737,18 @@ function Get-TableAndColumns {
 
     switch ($OperationType) {
         "INSERT" {
-            $pattern = '(?i)INSERT\s+INTO\s+(?:([\w$]+)\.)?([\w$]+)\s*\(([^)]+)\)'
+            # テーブル名と列リストの間に別名があってもよい（例: INSERT INTO TBL A (COL1, A.COL2, ...)）
+            $pattern = '(?i)INSERT\s+INTO\s+(?:([\w$]+)\.)?([\w$]+)(?:\s+(?!(?:VALUES|SELECT)\b)[\w$]+)?\s*\(([^)]+)\)'
             $m = [regex]::Matches($SqlFragment, $pattern)
             foreach ($match in $m) {
                 $tableName = $match.Groups[2].Value.ToUpper()
                 if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
                 $columnsRaw = $match.Groups[3].Value
-                $columns = ($columnsRaw -split ',') | ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ -ne '' }
+                # 別名修飾子（例: A.COL2 → COL2）を除去してカラム名を正規化する
+                $columns = ($columnsRaw -split ',') | ForEach-Object {
+                    $t = $_.Trim().ToUpper()
+                    if ($t -match '\.([\w$]+)$') { $Matches[1] } else { $t }
+                } | Where-Object { $_ -ne '' }
                 foreach ($col in $columns) {
                     [void]$crudExtractList.Add(@{
                         TableName  = $tableName
@@ -753,7 +792,8 @@ function Get-TableAndColumns {
                 }
             }
 
-            $patternInsertValues = '(?i)INSERT\s+INTO\s+(?:([\w$]+)\.)?([\w$]+)\s+VALUES\s*\('
+            # テーブル名と VALUES の間に別名があってもよく、VALUES の後に括弧なし変数も許容する（例: INSERT INTO TBL A VALUES d_row）
+            $patternInsertValues = '(?i)INSERT\s+INTO\s+(?:([\w$]+)\.)?([\w$]+)(?:\s+(?!VALUES\b)[\w$]+)?\s+VALUES\b'
             foreach ($im in [regex]::Matches($SqlFragment, $patternInsertValues)) {
                 $tableName = $im.Groups[2].Value.ToUpper()
                 if ($cteNames.Count -gt 0 -and $cteNames.Contains($tableName)) { continue }
@@ -1272,6 +1312,60 @@ function Get-CrudRowsFromExistsSubqueriesInText {
                         }
                         if (-not $dup) {
                             [void]$out.Add($sup)
+                        }
+                    }
+                }
+            }
+        }
+        $searchPos = $j
+    }
+
+    # IN (SELECT ...) / NOT IN (SELECT ...) サブクエリも EXISTS と同様に処理する
+    $searchPos = 0
+    while ($searchPos -lt $t.Length) {
+        $sub = $t.Substring($searchPos)
+        $m = [regex]::Match($sub, '(?i)\b(?:NOT\s+)?IN\s*\(')
+        if (-not $m.Success) {
+            break
+        }
+        $openParen = $searchPos + $m.Index + $m.Length - 1
+        $depth = 0
+        $inString = $false
+        $j = $openParen
+        while ($j -lt $t.Length) {
+            $adv = Step-OracleSqlScanOneChar -Text $t -ScanPos $j -InString ([ref]$inString) -Depth ([ref]$depth)
+            $j += $adv
+            if ($depth -eq 0 -and $j -gt $openParen) {
+                break
+            }
+        }
+        if ($j -gt $openParen + 1) {
+            $innerLen = $j - $openParen - 2
+            if ($innerLen -gt 0) {
+                $innerTrim = $t.Substring($openParen + 1, $innerLen).Trim()
+                if ($innerTrim -match '(?is)^\s*SELECT\b') {
+                    $subRows = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $innerTrim -OperationType "SELECT" -AdditionalCteNames $AdditionalCteNames -PlSqlDeclaredNames $PlSqlDeclaredNames)
+                    $roughFromIn = Get-OracleRoughFromClauseAfterFromKeyword -SelectSql $innerTrim
+                    $amInInner = Get-OracleFromAliasToTableMap -FromClause $roughFromIn
+                    foreach ($sr in $subRows) {
+                        if ($null -eq $sr -or $null -eq $sr.TableName -or $sr.TableName -eq '') { continue }
+                        $tnIn = [string]$sr.TableName
+                        if ($amInInner.ContainsKey($tnIn)) {
+                            $tnIn = [string]$amInInner[$tnIn]
+                        }
+                        $dup = $false
+                        foreach ($existing in $out) {
+                            if ($null -ne $existing.TableName -and $existing.TableName -eq $tnIn -and $existing.ColumnName -eq $sr.ColumnName -and $existing.Operation -eq $sr.Operation) {
+                                $dup = $true
+                                break
+                            }
+                        }
+                        if (-not $dup) {
+                            [void]$out.Add(@{
+                                TableName  = $tnIn
+                                ColumnName = $sr.ColumnName
+                                Operation  = $sr.Operation
+                            })
                         }
                     }
                 }
