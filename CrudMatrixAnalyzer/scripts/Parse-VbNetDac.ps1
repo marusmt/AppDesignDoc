@@ -14,10 +14,19 @@
     DACファイルのパターン（デフォルト: *dac*.vb）
 #>
 
+function Remove-VbNetCommentLines {
+    param([string]$Text)
+    # VB.NET のコメント行（行頭が ' で始まる行）を除去する
+    $lines = $Text -split "\r?\n"
+    $filtered = $lines | Where-Object { $_ -notmatch "^\s*'" }
+    return $filtered -join "`n"
+}
+
 function Get-VbNetSqlStrings {
     param([string]$Content)
 
     $Content = $Content -replace [char]0x3000, ' '
+    $Content = Remove-VbNetCommentLines -Text $Content
 
     $sqlStrings = [System.Collections.ArrayList]::new()
 
