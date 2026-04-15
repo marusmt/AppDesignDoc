@@ -63,8 +63,11 @@ function Invoke-VbNetParser {
         $trimmed = $line.Trim()
 
         # ================================================
-        # コメントのスキップ
+        # コメントのスキップ・空行スキップ
         # ================================================
+        if ($trimmed -eq '') {
+            continue
+        }
         if ($trimmed -match "^\s*'") {
             continue
         }
@@ -85,7 +88,10 @@ function Invoke-VbNetParser {
 
             for ($j = $i; $j -lt $lines.Count; $j++) {
                 $ifLine = $lines[$j].Trim()
-                $ifLines.Add($lines[$j])
+                # 空行はスキップ（Expand-IfBranchesのMandatory[string[]]パラメータが空文字列を拒否するため）
+                if ($ifLine -ne '') {
+                    $ifLines.Add($lines[$j])
+                }
 
                 if ($ifLine -match '(?i)^\s*If\s+.+\s+Then\s*$') {
                     $ifNestLevel++
@@ -131,8 +137,13 @@ function Invoke-VbNetParser {
                 return $null
             }
 
-            $branchResults = Expand-IfBranches -Lines $ifLines.ToArray() `
-                -Language 'vbnet' -ExtractSqlFromLine $extractSqlFromLine
+            if ($ifLines.Count -eq 0) {
+                $branchResults = @()
+            }
+            else {
+                $branchResults = Expand-IfBranches -Lines $ifLines.ToArray() `
+                    -Language 'vbnet' -ExtractSqlFromLine $extractSqlFromLine
+            }
 
             if ($branchResults.Count -gt 0) {
                 # 直前に操作した動的SQL変数/SBの Fragments リストに直接追加する
@@ -372,6 +383,7 @@ function Join-VbNetContinuationLines {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string[]]$Lines
     )
 

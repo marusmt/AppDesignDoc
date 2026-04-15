@@ -23,6 +23,52 @@ enum PlSqlParserState {
 }
 
 # ============================================================
+# Remove-PlSqlInlineComment: 行末インラインコメントを除去
+# 文字列リテラル外の -- コメントのみ除去する
+# ============================================================
+function Remove-PlSqlInlineComment {
+    param([string]$Line)
+
+    $result = [System.Text.StringBuilder]::new()
+    $inString = $false
+    $len = $Line.Length
+
+    for ($k = 0; $k -lt $len; $k++) {
+        $ch = $Line[$k]
+
+        if ($inString) {
+            # 文字列内: '' はエスケープされたシングルクォート
+            if ($ch -eq "'" -and ($k + 1) -lt $len -and $Line[$k + 1] -eq "'") {
+                [void]$result.Append("''")
+                $k++
+            }
+            elseif ($ch -eq "'") {
+                [void]$result.Append($ch)
+                $inString = $false
+            }
+            else {
+                [void]$result.Append($ch)
+            }
+        }
+        else {
+            # 文字列外: -- を検出したらそこで終了
+            if ($ch -eq '-' -and ($k + 1) -lt $len -and $Line[$k + 1] -eq '-') {
+                break
+            }
+            elseif ($ch -eq "'") {
+                [void]$result.Append($ch)
+                $inString = $true
+            }
+            else {
+                [void]$result.Append($ch)
+            }
+        }
+    }
+
+    return $result.ToString().TrimEnd()
+}
+
+# ============================================================
 # Invoke-PlSqlParser: PL/SQLパース実行
 # ============================================================
 function Invoke-PlSqlParser {
@@ -82,14 +128,17 @@ function Invoke-PlSqlParser {
         # IF分岐の検出と展開
         # ================================================
         if ($trimmed -match '(?i)^\s*IF\s+(.+?)\s+THEN') {
-            # IF ブロック全体を収集
+            # IF ブロック全体を収集（空白行・空行は除外してから渡す）
             $ifLines = [System.Collections.Generic.List[string]]::new()
             $ifStartLine = $lineNum
             $ifNestLevel = 0
 
             for ($j = $i; $j -lt $lines.Count; $j++) {
                 $ifLine = $lines[$j].Trim()
-                $ifLines.Add($lines[$j])
+                # 空行はスキップ（Expand-IfBranchesのMandatory[string[]]パラメータが空文字列を拒否するため）
+                if ($ifLine -ne '') {
+                    $ifLines.Add($lines[$j])
+                }
 
                 if ($ifLine -match '(?i)^\s*IF\s+') {
                     $ifNestLevel++
@@ -100,6 +149,11 @@ function Invoke-PlSqlParser {
                         break
                     }
                 }
+            }
+            # END IFが見つからずループが完了した場合、$jは$lines.Countになる（配列範囲外）
+            # インナースキャンで$lines[$j]がnullになりエラーになるため、クランプする
+            if ($j -ge $lines.Count) {
+                $j = $lines.Count - 1
             }
 
             # SQL断片抽出用のスクリプトブロック
@@ -122,20 +176,74 @@ function Invoke-PlSqlParser {
                 return $null
             }
 
-            $branchResults = Expand-IfBranches -Lines $ifLines.ToArray() `
-                -Language 'plsql' -ExtractSqlFromLine $extractSqlFromLine
+            if ($ifLines.Count -gt 0) {
+                $branchResults = Expand-IfBranches -Lines $ifLines.ToArray() `
+                    -Language 'plsql' -ExtractSqlFromLine $extractSqlFromLine
 
-            if ($branchResults.Count -gt 0) {
-                # 直前に操作した動的SQL変数のFragmentsリストに直接追加する。
-                # 変数が未確定の場合は後続の変数確定フェーズで拾われるようにフォールバック。
-                if ($lastFragmentsList) {
-                    foreach ($fragment in $branchResults) {
-                        $lastFragmentsList.Add($fragment)
+                # ブランチコメント（"-- [Branch N] ..."）を除いた実際のSQL断片のみチェックする
+                # Expand-IfBranchesは分岐があれば必ずコメント行を返すため、
+                # コメント行だけの場合は動的SQL断片なし（静的SQLのIF分岐）と判断する
+                $realFragments = @($branchResults | Where-Object { $_ -notmatch '^-- \[Branch \d+\]' })
+                if ($realFragments.Count -gt 0) {
+                    # 直前に操作した動的SQL変数のFragmentsリストに直接追加する。
+                    # 変数が未確定の場合は後続の変数確定フェーズで拾われるようにフォールバック。
+                    if ($lastFragmentsList) {
+                        foreach ($fragment in $branchResults) {
+                            $lastFragmentsList.Add($fragment)
+                        }
+                    }
+                    # 変数が特定できない場合は破棄（ログ警告を出す）
+                    else {
+                        Write-Log -Level WARN -Message "Line ${ifStartLine}: IF分岐の断片を関連付ける動的SQL変数が見つかりません" -LogFile $LogFile
                     }
                 }
-                # 変数が特定できない場合は破棄（ログ警告を出す）
+            }
+
+            # IFブロック内の直接静的SQL文（UPDATE/DELETE/INSERT/SELECT等）を抽出する
+            $m = $i
+            while ($m -le $j) {
+                $mTrimmed = $lines[$m].Trim()
+                $mLineNum = $m + 1
+
+                # 空行・行コメント・制御構文はスキップ
+                if ($mTrimmed -eq '' -or
+                    $mTrimmed -match '^--' -or
+                    $mTrimmed -match '(?i)^(IF|ELSIF|ELSE|END\s+IF|BEGIN|END)\b') {
+                    $m++
+                    continue
+                }
+
+                if ($mTrimmed -match '(?i)^(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE)\b') {
+                    $innerSqlStart = $mLineNum
+                    $innerSql = Remove-PlSqlInlineComment -Line $mTrimmed
+                    $m++
+
+                    while ($m -le $j -and -not $innerSql.TrimEnd().EndsWith(';')) {
+                        $nextMLine = Remove-PlSqlInlineComment -Line $lines[$m].Trim()
+                        if ($nextMLine -match '(?i)^(IF|ELSIF|LOOP|FOR|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
+                            $nextMLine -match '(?i)^ELSE\s*$' -or
+                            $nextMLine -match '(?i)^END\b' -or
+                            $nextMLine -match '^--') {
+                            break
+                        }
+                        $innerSql += ' ' + $nextMLine
+                        $m++
+                    }
+                    $innerSql = $innerSql.TrimEnd(';').Trim()
+
+                    if ($innerSql) {
+                        $stmt = [SqlStatement]::new()
+                        $stmt.Sql = $innerSql
+                        $stmt.Type = Get-SqlType -SqlText $innerSql
+                        $stmt.Category = 'Static'
+                        $stmt.StartLine = $innerSqlStart
+                        $stmt.EndLine = $m
+                        $stmt.SourceFile = $fileName
+                        $sqlStatements.Add($stmt)
+                    }
+                }
                 else {
-                    Write-Log -Level WARN -Message "Line ${ifStartLine}: IF分岐の断片を関連付ける動的SQL変数が見つかりません" -LogFile $LogFile
+                    $m++
                 }
             }
 
@@ -235,7 +343,8 @@ function Invoke-PlSqlParser {
                 # 複数行にまたがる可能性
                 while (-not $sql.EndsWith(';') -and ($i + 1) -lt $lines.Count) {
                     $i++
-                    $sql += ' ' + $lines[$i].Trim().TrimEnd(';')
+                    $nextOpenLine = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
+                    $sql += ' ' + $nextOpenLine.TrimEnd(';')
                 }
                 $category = 'Static'
             }
@@ -292,27 +401,55 @@ function Invoke-PlSqlParser {
 
         # ================================================
         # CURSOR宣言内のSELECT文
+        # CURSOR name IS [sql] または CURSOR name IS（次行以降にSQLが続く場合も対応）
         # ================================================
-        if ($trimmed -match '(?i)^CURSOR\s+\w+\s+IS\s+(.+)') {
-            $cursorSql = $Matches[1]
+        if ($trimmed -match '(?i)^CURSOR\s+\w+\s+IS\b') {
             $startLine = $lineNum
+
+            # IS の後にSQLが続く場合
+            if ($trimmed -match '(?i)^CURSOR\s+\w+\s+IS\s+(.+)') {
+                $cursorSql = Remove-PlSqlInlineComment -Line $Matches[1]
+            }
+            else {
+                # IS が行末にある場合は次行からSQLを収集
+                if (($i + 1) -lt $lines.Count) {
+                    $i++
+                    $lineNum = $i + 1
+                    $cursorSql = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
+                }
+                else {
+                    continue
+                }
+            }
 
             # 複数行にまたがる場合
             while (-not $cursorSql.TrimEnd().EndsWith(';') -and ($i + 1) -lt $lines.Count) {
                 $i++
                 $lineNum = $i + 1
-                $cursorSql += ' ' + $lines[$i].Trim()
+                $nextCursorLine = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
+
+                # PL/SQL制御構文に到達したら終了
+                if ($nextCursorLine -match '(?i)^(BEGIN|IF|ELSIF|LOOP|FOR|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
+                    $nextCursorLine -match '(?i)^ELSE\s*$' -or
+                    $nextCursorLine -match '(?i)^END\s*(\w+\s*)?;') {
+                    $i--
+                    $lineNum = $i + 1
+                    break
+                }
+                $cursorSql += ' ' + $nextCursorLine
             }
             $cursorSql = $cursorSql.TrimEnd(';').Trim()
 
-            $stmt = [SqlStatement]::new()
-            $stmt.Sql = $cursorSql
-            $stmt.Type = Get-SqlType -SqlText $cursorSql
-            $stmt.Category = 'Static'
-            $stmt.StartLine = $startLine
-            $stmt.EndLine = $lineNum
-            $stmt.SourceFile = $fileName
-            $sqlStatements.Add($stmt)
+            if ($cursorSql) {
+                $stmt = [SqlStatement]::new()
+                $stmt.Sql = $cursorSql
+                $stmt.Type = Get-SqlType -SqlText $cursorSql
+                $stmt.Category = 'Static'
+                $stmt.StartLine = $startLine
+                $stmt.EndLine = $lineNum
+                $stmt.SourceFile = $fileName
+                $sqlStatements.Add($stmt)
+            }
             continue
         }
 
@@ -321,17 +458,19 @@ function Invoke-PlSqlParser {
         # ================================================
         if ($trimmed -match '(?i)^(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE)\b') {
             $startLine = $lineNum
-            $staticSql = $trimmed
+            # 先頭行もインラインコメントを除去してから使用
+            $staticSql = Remove-PlSqlInlineComment -Line $trimmed
 
             # 複数行にまたがるSQL文を収集
             while (-not $staticSql.TrimEnd().EndsWith(';') -and ($i + 1) -lt $lines.Count) {
                 $i++
                 $lineNum = $i + 1
-                $nextLine = $lines[$i].Trim()
+                $nextLine = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
 
-                # PL/SQL制御構文に到達したら終了（CASE式のENDは除く）
-                # END; / END name; / END LOOP; / END IF; はPL/SQLブロック終端
-                if ($nextLine -match '(?i)^(BEGIN|IF|ELSIF|ELSE|LOOP|FOR|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
+                # PL/SQL制御構文に到達したら終了
+                # CASE式の ELSE は "ELSE 式" の形なので、単独の ELSE のみ終了と判断する
+                if ($nextLine -match '(?i)^(BEGIN|IF|ELSIF|LOOP|FOR|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
+                    $nextLine -match '(?i)^ELSE\s*$' -or
                     $nextLine -match '(?i)^END\s*(\w+\s*)?;') {
                     $i--
                     $lineNum = $i + 1

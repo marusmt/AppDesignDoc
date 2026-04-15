@@ -283,6 +283,7 @@ function Expand-IfBranches {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string[]]$Lines,
 
         [Parameter(Mandatory)]
