@@ -8,8 +8,6 @@
     行継続文字（_）による複数行連結にも対応しています。
 #>
 
-using module .\SqlFormatter.psm1
-
 # ============================================================
 # 状態管理用Enum
 # ============================================================
@@ -47,7 +45,7 @@ function Invoke-VbNetParser {
     $lines = $joined.Lines
     $originalLineNumbers = $joined.OriginalLineNumbers
 
-    $sqlStatements = [System.Collections.Generic.List[SqlStatement]]::new()
+    $sqlStatements = [System.Collections.Generic.List[object]]::new()
     $dynamicSqlVars = @{}   # 変数名 → @{Fragments; StartLine}
     $sbVars = @{}           # StringBuilder変数名 → @{Fragments; StartLine}
 
@@ -170,7 +168,7 @@ function Invoke-VbNetParser {
             $sql = Extract-VbNetSqlFromExpression -Expression $cmdExpr
 
             if ($sql) {
-                $stmt = [SqlStatement]::new()
+                $stmt = New-SqlStatement
                 $stmt.Sql = Convert-ToPlaceholder -SqlText $sql -Language 'vbnet'
                 $stmt.Type = Get-SqlType -SqlText $sql
                 $stmt.Category = 'Static'
@@ -188,7 +186,7 @@ function Invoke-VbNetParser {
         if ($trimmed -match '(?i)New\s+(?:Sql|Oracle|OleDb|Odbc)?Command\s*\(\s*"(.+?)"') {
             $sql = $Matches[1] -replace '""', '"'
 
-            $stmt = [SqlStatement]::new()
+            $stmt = New-SqlStatement
             $stmt.Sql = Convert-ToPlaceholder -SqlText $sql -Language 'vbnet'
             $stmt.Type = Get-SqlType -SqlText $sql
             $stmt.Category = 'Static'
@@ -289,7 +287,7 @@ function Invoke-VbNetParser {
             $formatSql = Convert-ToPlaceholder -SqlText $formatSql -Language 'vbnet'
 
             if ($formatSql -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
-                $stmt = [SqlStatement]::new()
+                $stmt = New-SqlStatement
                 $stmt.Sql = $formatSql
                 $stmt.Type = Get-SqlType -SqlText $formatSql
                 $stmt.Category = 'Dynamic'
@@ -309,7 +307,7 @@ function Invoke-VbNetParser {
             $interpSql = Convert-ToPlaceholder -SqlText $interpSql -Language 'vbnet'
 
             if ($interpSql -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
-                $stmt = [SqlStatement]::new()
+                $stmt = New-SqlStatement
                 $stmt.Sql = $interpSql
                 $stmt.Type = Get-SqlType -SqlText $interpSql
                 $stmt.Category = 'Dynamic'
@@ -332,7 +330,7 @@ function Invoke-VbNetParser {
             $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray()
             $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
 
-            $stmt = [SqlStatement]::new()
+            $stmt = New-SqlStatement
             $stmt.Sql = $mergedSql
             $stmt.Type = Get-SqlType -SqlText $mergedSql
             $stmt.Category = 'Dynamic'
@@ -354,7 +352,7 @@ function Invoke-VbNetParser {
             $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
 
             if ($mergedSql -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
-                $stmt = [SqlStatement]::new()
+                $stmt = New-SqlStatement
                 $stmt.Sql = $mergedSql
                 $stmt.Type = Get-SqlType -SqlText $mergedSql
                 $stmt.Category = 'Dynamic'

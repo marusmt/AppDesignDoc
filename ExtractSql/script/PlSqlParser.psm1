@@ -7,8 +7,6 @@
     IF分岐内のSQL断片をすべて抽出・展開します。
 #>
 
-using module .\SqlFormatter.psm1
-
 # ============================================================
 # 状態管理用Enum
 # ============================================================
@@ -88,7 +86,7 @@ function Invoke-PlSqlParser {
     Write-Log -Level INFO -Message "Processing: $fileName (PL/SQL)" -LogFile $LogFile
 
     $lines = Get-Content -Path $FilePath -Encoding $Encoding
-    $sqlStatements = [System.Collections.Generic.List[SqlStatement]]::new()
+    $sqlStatements = [System.Collections.Generic.List[object]]::new()
 
     $state = [PlSqlParserState]::Normal
     $currentSql = ''
@@ -232,7 +230,7 @@ function Invoke-PlSqlParser {
                     $innerSql = $innerSql.TrimEnd(';').Trim()
 
                     if ($innerSql) {
-                        $stmt = [SqlStatement]::new()
+                        $stmt = New-SqlStatement
                         $stmt.Sql = $innerSql
                         $stmt.Type = Get-SqlType -SqlText $innerSql
                         $stmt.Category = 'Static'
@@ -264,7 +262,7 @@ function Invoke-PlSqlParser {
                 $execPart = $execPart -replace ';\s*$', ''
                 $sql = Extract-PlSqlDynamicSql -Expression $execPart
                 if ($sql) {
-                    $stmt = [SqlStatement]::new()
+                    $stmt = New-SqlStatement
                     $stmt.Sql = $sql
                     $stmt.Type = Get-SqlType -SqlText $sql
                     $stmt.Category = 'Dynamic'
@@ -288,7 +286,7 @@ function Invoke-PlSqlParser {
                 $currentSql += ' ' + ($trimmed -replace ';\s*$', '')
                 $sql = Extract-PlSqlDynamicSql -Expression $currentSql
                 if ($sql) {
-                    $stmt = [SqlStatement]::new()
+                    $stmt = New-SqlStatement
                     $stmt.Sql = $sql
                     $stmt.Type = Get-SqlType -SqlText $sql
                     $stmt.Category = 'Dynamic'
@@ -313,7 +311,7 @@ function Invoke-PlSqlParser {
             $parseSql = $Matches[1]
             $sql = Extract-PlSqlDynamicSql -Expression $parseSql
             if ($sql) {
-                $stmt = [SqlStatement]::new()
+                $stmt = New-SqlStatement
                 $stmt.Sql = $sql
                 $stmt.Type = Get-SqlType -SqlText $sql
                 $stmt.Category = 'Dynamic'
@@ -350,7 +348,7 @@ function Invoke-PlSqlParser {
             }
 
             if ($sql) {
-                $stmt = [SqlStatement]::new()
+                $stmt = New-SqlStatement
                 $stmt.Sql = $sql
                 $stmt.Type = Get-SqlType -SqlText $sql
                 $stmt.Category = $category
@@ -441,7 +439,7 @@ function Invoke-PlSqlParser {
             $cursorSql = $cursorSql.TrimEnd(';').Trim()
 
             if ($cursorSql) {
-                $stmt = [SqlStatement]::new()
+                $stmt = New-SqlStatement
                 $stmt.Sql = $cursorSql
                 $stmt.Type = Get-SqlType -SqlText $cursorSql
                 $stmt.Category = 'Static'
@@ -480,7 +478,7 @@ function Invoke-PlSqlParser {
             }
             $staticSql = $staticSql.TrimEnd(';').Trim()
 
-            $stmt = [SqlStatement]::new()
+            $stmt = New-SqlStatement
             $stmt.Sql = $staticSql
             $stmt.Type = Get-SqlType -SqlText $staticSql
             $stmt.Category = 'Static'
@@ -502,7 +500,7 @@ function Invoke-PlSqlParser {
             $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray()
             $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'plsql'
 
-            $stmt = [SqlStatement]::new()
+            $stmt = New-SqlStatement
             $stmt.Sql = $mergedSql
             $stmt.Type = Get-SqlType -SqlText $mergedSql
             $stmt.Category = 'Dynamic'

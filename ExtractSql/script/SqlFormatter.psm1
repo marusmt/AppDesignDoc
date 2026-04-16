@@ -25,6 +25,15 @@ class SqlStatement {
 }
 
 # ============================================================
+# New-SqlStatement: SqlStatementオブジェクトのファクトリ関数
+# using module による型の二重ロードを回避するため、
+# パーサーモジュールはこの関数経由でオブジェクトを生成する
+# ============================================================
+function New-SqlStatement {
+    return [SqlStatement]::new()
+}
+
+# ============================================================
 # Merge-DynamicSql: 動的SQL文字列の結合
 # ============================================================
 function Merge-DynamicSql {
@@ -179,7 +188,7 @@ function Export-SqlFiles {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [SqlStatement[]]$SqlStatements,
+        [object[]]$SqlStatements,
 
         [Parameter(Mandatory)]
         [string]$SourceFileName,
@@ -375,6 +384,7 @@ function Expand-IfBranches {
 
 # モジュールエクスポート
 Export-ModuleMember -Function @(
+    'New-SqlStatement',
     'Merge-DynamicSql',
     'Convert-ToPlaceholder',
     'Format-SqlStatement',
