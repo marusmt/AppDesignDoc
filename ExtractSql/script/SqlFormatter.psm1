@@ -124,22 +124,25 @@ function Format-SqlStatement {
         $result = [regex]::Replace($result, $pattern, $kw)
     }
 
-    # BETWEEN...AND を一時的に保護してから AND/OR の改行処理を行う
-    $result = [regex]::Replace($result, '(?i)(BETWEEN\s+\S+\s+)AND\b', '$1__PROTECTED_AND__')
+    # 改行がない場合のみ句キーワードの前で改行+インデントを付与する
+    # （改行が既にある場合は元のソース形式を保持）
+    if ($result -notmatch "`n") {
+        # BETWEEN...AND を一時的に保護してから AND/OR の改行処理を行う
+        $result = [regex]::Replace($result, '(?i)(BETWEEN\s+\S+\s+)AND\b', '$1__PROTECTED_AND__')
 
-    # 主要句の前で改行+インデント
-    $clauseKeywords = @('FROM', 'WHERE', 'AND', 'OR', 'ORDER BY',
-        'GROUP BY', 'HAVING', 'JOIN', 'INNER JOIN', 'LEFT JOIN',
-        'RIGHT JOIN', 'FULL JOIN', 'CROSS JOIN', 'ON',
-        'SET', 'VALUES', 'INTO', 'USING', 'WHEN MATCHED', 'UNION')
+        $clauseKeywords = @('FROM', 'WHERE', 'AND', 'OR', 'ORDER BY',
+            'GROUP BY', 'HAVING', 'JOIN', 'INNER JOIN', 'LEFT JOIN',
+            'RIGHT JOIN', 'FULL JOIN', 'CROSS JOIN', 'ON',
+            'SET', 'VALUES', 'INTO', 'USING', 'WHEN MATCHED', 'UNION')
 
-    foreach ($clause in $clauseKeywords) {
-        $pattern = '(?<!--)\s+(?=' + [regex]::Escape($clause) + '\b)'
-        $result = [regex]::Replace($result, $pattern, "`n  ")
+        foreach ($clause in $clauseKeywords) {
+            $pattern = '(?<!--)\s+(?=' + [regex]::Escape($clause) + '\b)'
+            $result = [regex]::Replace($result, $pattern, "`n  ")
+        }
+
+        # BETWEEN...AND を復元
+        $result = $result -replace '__PROTECTED_AND__', 'AND'
     }
-
-    # BETWEEN...AND を復元
-    $result = $result -replace '__PROTECTED_AND__', 'AND'
 
     # 連続する空行を除去
     $result = [regex]::Replace($result, '(\r?\n){3,}', "`n`n")

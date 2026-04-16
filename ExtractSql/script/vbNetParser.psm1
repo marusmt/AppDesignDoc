@@ -46,12 +46,14 @@ function Invoke-VbNetParser {
     $originalLineNumbers = $joined.OriginalLineNumbers
 
     $sqlStatements = [System.Collections.Generic.List[object]]::new()
-    $dynamicSqlVars = @{}   # 変数名 → @{Fragments; StartLine}
-    $sbVars = @{}           # StringBuilder変数名 → @{Fragments; StartLine}
+    $dynamicSqlVars = @{}   # 変数名 → @{Fragments; StartLine; EndLine}
+    $sbVars = @{}           # StringBuilder変数名 → @{Fragments; StartLine; EndLine}
 
     # 最後に更新された動的SQL変数/SBの Fragments リストへの参照。
     # IF分岐の断片をその変数に直接追加するために使用する。
     $lastFragmentsList = $null
+    $lastVarName = $null      # 最後に更新された変数名
+    $lastVarSource = $null    # 最後に更新されたハッシュテーブル（$dynamicSqlVars または $sbVars）
 
     $inBlockComment = $false
 
@@ -149,6 +151,9 @@ function Invoke-VbNetParser {
                     foreach ($fragment in $branchResults) {
                         $lastFragmentsList.Add($fragment)
                     }
+                    if ($lastVarName -and $lastVarSource -and $lastVarSource.ContainsKey($lastVarName)) {
+                        $lastVarSource[$lastVarName].EndLine = $originalLineNumbers[$j]
+                    }
                 }
                 else {
                     Write-Log -Level WARN -Message "Line ${lineNum}: If分岐の断片を関連付けるSQL変数が見つかりません" -LogFile $LogFile
@@ -208,10 +213,14 @@ function Invoke-VbNetParser {
                 $sbVars[$sbVarName] = @{
                     Fragments = [System.Collections.Generic.List[string]]::new()
                     StartLine = $lineNum
+                    EndLine   = $lineNum
                 }
             }
             $sbVars[$sbVarName].Fragments.Add($sqlPart)
+            $sbVars[$sbVarName].EndLine = $lineNum
             $lastFragmentsList = $sbVars[$sbVarName].Fragments
+            $lastVarName = $sbVarName
+            $lastVarSource = $sbVars
             continue
         }
 
@@ -224,12 +233,30 @@ function Invoke-VbNetParser {
             $sqlPart = Extract-VbNetSqlFromExpression -Expression $assignExpr
 
             if ($sqlPart -and $sqlPart -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                # 同名変数に既存断片がある場合は先に確定させる
+                if ($dynamicSqlVars.ContainsKey($varName) -and $dynamicSqlVars[$varName].Fragments.Count -gt 0) {
+                    $prevInfo = $dynamicSqlVars[$varName]
+                    $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
+                    $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
+                    $prevStmt = New-SqlStatement
+                    $prevStmt.Sql = $prevMerged
+                    $prevStmt.Type = Get-SqlType -SqlText $prevMerged
+                    $prevStmt.Category = 'Dynamic'
+                    $prevStmt.StartLine = $prevInfo.StartLine
+                    $prevStmt.EndLine = $lineNum - 1
+                    $prevStmt.SourceFile = $fileName
+                    $sqlStatements.Add($prevStmt)
+                }
+                # 新規代入
                 $dynamicSqlVars[$varName] = @{
                     Fragments = [System.Collections.Generic.List[string]]::new()
                     StartLine = $lineNum
+                    EndLine   = $lineNum
                 }
                 $dynamicSqlVars[$varName].Fragments.Add($sqlPart)
                 $lastFragmentsList = $dynamicSqlVars[$varName].Fragments
+                $lastVarName = $varName
+                $lastVarSource = $dynamicSqlVars
             }
             continue
         }
@@ -247,10 +274,14 @@ function Invoke-VbNetParser {
                     $dynamicSqlVars[$varName] = @{
                         Fragments = [System.Collections.Generic.List[string]]::new()
                         StartLine = $lineNum
+                        EndLine   = $lineNum
                     }
                 }
                 $dynamicSqlVars[$varName].Fragments.Add($sqlPart)
+                $dynamicSqlVars[$varName].EndLine = $lineNum
                 $lastFragmentsList = $dynamicSqlVars[$varName].Fragments
+                $lastVarName = $varName
+                $lastVarSource = $dynamicSqlVars
             }
             continue
         }
@@ -270,10 +301,14 @@ function Invoke-VbNetParser {
                     $dynamicSqlVars[$varName] = @{
                         Fragments = [System.Collections.Generic.List[string]]::new()
                         StartLine = $lineNum
+                        EndLine   = $lineNum
                     }
                 }
                 $dynamicSqlVars[$varName].Fragments.Add($sqlPart)
+                $dynamicSqlVars[$varName].EndLine = $lineNum
                 $lastFragmentsList = $dynamicSqlVars[$varName].Fragments
+                $lastVarName = $varName
+                $lastVarSource = $dynamicSqlVars
             }
             continue
         }
@@ -335,7 +370,7 @@ function Invoke-VbNetParser {
             $stmt.Type = Get-SqlType -SqlText $mergedSql
             $stmt.Category = 'Dynamic'
             $stmt.StartLine = $varInfo.StartLine
-            $stmt.EndLine = $rawLines.Count
+            $stmt.EndLine = $varInfo.EndLine
             $stmt.SourceFile = $fileName
             $sqlStatements.Add($stmt)
         }
@@ -357,7 +392,7 @@ function Invoke-VbNetParser {
                 $stmt.Type = Get-SqlType -SqlText $mergedSql
                 $stmt.Category = 'Dynamic'
                 $stmt.StartLine = $sbInfo.StartLine
-                $stmt.EndLine = $rawLines.Count
+                $stmt.EndLine = $sbInfo.EndLine
                 $stmt.SourceFile = $fileName
                 $sqlStatements.Add($stmt)
             }

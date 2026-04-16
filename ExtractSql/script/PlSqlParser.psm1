@@ -97,6 +97,7 @@ function Invoke-PlSqlParser {
     # 最後に更新された動的SQL変数の Fragments リストへの参照。
     # IF分岐の断片をその変数に直接追加するために使用する。
     $lastFragmentsList = $null
+    $lastVarName = $null
 
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $lineNum = $i + 1
@@ -189,6 +190,9 @@ function Invoke-PlSqlParser {
                         foreach ($fragment in $branchResults) {
                             $lastFragmentsList.Add($fragment)
                         }
+                        if ($lastVarName -and $dynamicSqlVars.ContainsKey($lastVarName)) {
+                            $dynamicSqlVars[$lastVarName].EndLine = $j + 1
+                        }
                     }
                     # 変数が特定できない場合は破棄（ログ警告を出す）
                     else {
@@ -224,7 +228,7 @@ function Invoke-PlSqlParser {
                             $nextMLine -match '^--') {
                             break
                         }
-                        $innerSql += ' ' + $nextMLine
+                        $innerSql += "`n" + $nextMLine
                         $m++
                     }
                     $innerSql = $innerSql.TrimEnd(';').Trim()
@@ -336,13 +340,22 @@ function Invoke-PlSqlParser {
                 $category = 'Dynamic'
             }
             else {
+                # USING句を除去してFOR直後の内容を確認する
+                $openForContent = ($openForPart -replace '(?i)\s+USING\s+.*$', '' -replace ';\s*$', '').Trim()
+
+                # 変数参照のみの場合（OPEN c FOR v_sql / OPEN c FOR v_sql USING ...）は
+                # 動的SQL変数追跡で処理済みのためスキップする
+                if ($openForContent -notmatch '(?i)^(SELECT|INSERT|UPDATE|DELETE|MERGE|WITH)\b') {
+                    continue
+                }
+
                 # 直接SQL文の場合（静的SQL）
                 $sql = $openForPart.TrimEnd(';').Trim()
                 # 複数行にまたがる可能性
                 while (-not $sql.EndsWith(';') -and ($i + 1) -lt $lines.Count) {
                     $i++
                     $nextOpenLine = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
-                    $sql += ' ' + $nextOpenLine.TrimEnd(';')
+                    $sql += "`n" + $nextOpenLine.TrimEnd(';')
                 }
                 $category = 'Static'
             }
@@ -373,13 +386,29 @@ function Invoke-PlSqlParser {
                 $sqlPart = Extract-PlSqlStringLiterals -Expression $assignExpr
 
                 if ($sqlPart -and $sqlPart -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                    # 同名変数に既存の断片がある場合は先に確定させる（複数プロシージャで同名変数が使われる場合の対応）
+                    if ($dynamicSqlVars.ContainsKey($varName) -and $dynamicSqlVars[$varName].Fragments.Count -gt 0) {
+                        $prevInfo = $dynamicSqlVars[$varName]
+                        $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
+                        $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'plsql'
+                        $prevStmt = New-SqlStatement
+                        $prevStmt.Sql = $prevMerged
+                        $prevStmt.Type = Get-SqlType -SqlText $prevMerged
+                        $prevStmt.Category = 'Dynamic'
+                        $prevStmt.StartLine = $prevInfo.StartLine
+                        $prevStmt.EndLine = $lineNum - 1
+                        $prevStmt.SourceFile = $fileName
+                        $sqlStatements.Add($prevStmt)
+                    }
                     # 新規代入
                     $dynamicSqlVars[$varName] = @{
                         Fragments = [System.Collections.Generic.List[string]]::new()
                         StartLine = $lineNum
+                        EndLine   = $lineNum
                     }
                     $dynamicSqlVars[$varName].Fragments.Add($sqlPart)
                     $lastFragmentsList = $dynamicSqlVars[$varName].Fragments
+                    $lastVarName = $varName
                 }
                 elseif ($dynamicSqlVars.ContainsKey($varName) -or
                         $assignExpr -match "(?i)^$varName\s*\|\|") {
@@ -388,10 +417,13 @@ function Invoke-PlSqlParser {
                         $dynamicSqlVars[$varName] = @{
                             Fragments = [System.Collections.Generic.List[string]]::new()
                             StartLine = $lineNum
+                            EndLine   = $lineNum
                         }
                     }
                     $dynamicSqlVars[$varName].Fragments.Add($sqlPart)
+                    $dynamicSqlVars[$varName].EndLine = $lineNum
                     $lastFragmentsList = $dynamicSqlVars[$varName].Fragments
+                    $lastVarName = $varName
                 }
             }
             continue
@@ -434,7 +466,7 @@ function Invoke-PlSqlParser {
                     $lineNum = $i + 1
                     break
                 }
-                $cursorSql += ' ' + $nextCursorLine
+                $cursorSql += "`n" + $nextCursorLine
             }
             $cursorSql = $cursorSql.TrimEnd(';').Trim()
 
@@ -454,6 +486,10 @@ function Invoke-PlSqlParser {
         # ================================================
         # 静的SQL文の検出
         # ================================================
+        # PL/SQLオブジェクト宣言（PACKAGE/PROCEDURE/FUNCTION/TRIGGER/TYPE/BODY）はスキップ
+        if ($trimmed -match '(?i)^CREATE\s+(OR\s+REPLACE\s+)?(PACKAGE|PROCEDURE|FUNCTION|TRIGGER|TYPE)\b') {
+            continue
+        }
         if ($trimmed -match '(?i)^(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP|TRUNCATE)\b') {
             $startLine = $lineNum
             # 先頭行もインラインコメントを除去してから使用
@@ -474,7 +510,7 @@ function Invoke-PlSqlParser {
                     $lineNum = $i + 1
                     break
                 }
-                $staticSql += ' ' + $nextLine
+                $staticSql += "`n" + $nextLine
             }
             $staticSql = $staticSql.TrimEnd(';').Trim()
 
@@ -505,7 +541,7 @@ function Invoke-PlSqlParser {
             $stmt.Type = Get-SqlType -SqlText $mergedSql
             $stmt.Category = 'Dynamic'
             $stmt.StartLine = $varInfo.StartLine
-            $stmt.EndLine = $lines.Count
+            $stmt.EndLine = $varInfo.EndLine
             $stmt.SourceFile = $fileName
             $sqlStatements.Add($stmt)
         }
@@ -573,17 +609,17 @@ function Extract-PlSqlDynamicSql {
 
     $expr = $Expression.Trim()
 
-    # USING句を除去
-    $expr = $expr -replace '(?i)\s+USING\s+.*$', ''
-
-    # INTO句を除去（EXECUTE IMMEDIATE用）
-    $expr = $expr -replace '(?i)\s+INTO\s+\w+.*$', ''
-
-    # 単純な文字列リテラル
-    if ($expr -match "^'(.+)'$") {
+    # 文字列リテラルを最初に判定する（USING/INTO除去より前）
+    # これにより 'INSERT INTO ...' の INTO がSQL内部のものと誤って除去されるのを防ぐ
+    # パターン: 'SQL'  または  'SQL' INTO var  または  'SQL' USING ...
+    if ($expr -match "^'((?:[^']|'')*)'(?:\s+(?i:INTO|USING)\s+.*)?$") {
         $sql = $Matches[1] -replace "''", "'"
         return $sql
     }
+
+    # 変数式・連結式に対してのみ USING/INTO 句を除去
+    $expr = $expr -replace '(?i)\s+USING\s+.*$', ''
+    $expr = $expr -replace '(?i)\s+INTO\s+\w+.*$', ''
 
     # 変数名（追跡済みの動的SQL変数を参照）
     if ($expr -match '^[a-zA-Z_][a-zA-Z0-9_.]*$') {
