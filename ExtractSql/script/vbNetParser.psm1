@@ -54,8 +54,10 @@ function Invoke-VbNetParser {
     $lastFragmentsList = $null
     $lastVarName = $null      # 最後に更新された変数名
     $lastVarSource = $null    # 最後に更新されたハッシュテーブル（$dynamicSqlVars または $sbVars）
+    $currentWithVar = $null   # With ブロックで対象となっている変数名
 
     $inBlockComment = $false
+    $currentMethodName = ''   # 現在処理中のメソッド名（Sub/Function）
 
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $lineNum = $originalLineNumbers[$i]
@@ -78,6 +80,84 @@ function Invoke-VbNetParser {
 
         # インラインコメント除去
         $trimmed = Remove-VbNetInlineComment -Line $trimmed
+
+        # ================================================
+        # With ブロックの追跡
+        # ================================================
+        # With varName → With ブロック開始
+        if ($trimmed -match '(?i)^With\s+(\w+)\s*$') {
+            $currentWithVar = $Matches[1]
+            continue
+        }
+        # End With → With ブロック終了
+        if ($trimmed -match '(?i)^End\s+With\s*$') {
+            $currentWithVar = $null
+            continue
+        }
+        # With ブロック内の ".Append(...)" を "varName.Append(...)" に正規化
+        if ($currentWithVar -and $trimmed -match '(?i)^\.\w') {
+            $trimmed = $currentWithVar + $trimmed
+        }
+
+        # ================================================
+        # メソッド（Sub/Function）宣言の検出
+        # 例: Public Sub LoadData() / Private Function BuildSql(...) As String
+        # ================================================
+        if ($trimmed -match '(?i)\b(?:Sub|Function)\s+(\w+)\s*\(') {
+            $currentMethodName = $Matches[1]
+            continue
+        }
+
+        # ================================================
+        # メソッド境界の検出: End Sub / End Function
+        # 同名ローカル変数が別メソッドで再利用される場合に備え、
+        # メソッド終了時に蓄積した SQL 変数を確定してスコープをリセットする。
+        # ================================================
+        if ($trimmed -match '(?i)^End\s+(Sub|Function)\s*$') {
+            foreach ($varEntry in $dynamicSqlVars.GetEnumerator()) {
+                $varInfo = $varEntry.Value
+                if ($varInfo.Fragments.Count -gt 0) {
+                    $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray()
+                    $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
+                    $stmt = New-SqlStatement
+                    $stmt.Sql = $mergedSql
+                    $stmt.Type = Get-SqlType -SqlText $mergedSql
+                    $stmt.Category = 'Dynamic'
+                    $stmt.StartLine = $varInfo.StartLine
+                    $stmt.EndLine = $varInfo.EndLine
+                    $stmt.SourceFile = $fileName
+                    $stmt.MethodName = $currentMethodName
+                    $sqlStatements.Add($stmt)
+                }
+            }
+            foreach ($sbEntry in $sbVars.GetEnumerator()) {
+                $sbInfo = $sbEntry.Value
+                if ($sbInfo.Fragments.Count -gt 0) {
+                    $mergedSql = Merge-DynamicSql -Fragments $sbInfo.Fragments.ToArray()
+                    $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
+                    # プレースホルダ /*:...*/ が先頭に来る場合も考慮してSQLキーワードを検出
+                    if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                        $stmt = New-SqlStatement
+                        $stmt.Sql = $mergedSql
+                        $stmt.Type = Get-SqlType -SqlText $mergedSql
+                        $stmt.Category = 'Dynamic'
+                        $stmt.StartLine = $sbInfo.StartLine
+                        $stmt.EndLine = $sbInfo.EndLine
+                        $stmt.SourceFile = $fileName
+                        $stmt.MethodName = $currentMethodName
+                        $sqlStatements.Add($stmt)
+                    }
+                }
+            }
+            $dynamicSqlVars = @{}
+            $sbVars = @{}
+            $lastFragmentsList = $null
+            $lastVarName = $null
+            $lastVarSource = $null
+            $currentWithVar = $null
+            $currentMethodName = ''
+            continue
+        }
 
         # ================================================
         # If分岐の検出と展開
@@ -109,6 +189,13 @@ function Invoke-VbNetParser {
                 param($ln)
                 $t = $ln.Trim()
                 $result = $null
+
+                # StringBuilder.Append にメソッド呼び出しが渡されている場合（部分抽出）
+                # 例: sb.Append(BuildWithCteBlock("SELECT A, B, C FROM M_REF_TABLE "))
+                if ($t -match '(?i)\.Append(?:Line)?\s*\(\s*([a-zA-Z_][\w.]*\s*\(.*\))\s*\)') {
+                    $callExpr = $Matches[1].Trim()
+                    return "/*:${callExpr}*/"
+                }
 
                 # StringBuilder.Append / .AppendLine パターン
                 if ($t -match '(?i)\.Append(?:Line)?\s*\(\s*"(.+?)"\s*\)') {
@@ -180,6 +267,7 @@ function Invoke-VbNetParser {
                 $stmt.StartLine = $lineNum
                 $stmt.EndLine = $lineNum
                 $stmt.SourceFile = $fileName
+                $stmt.MethodName = $currentMethodName
                 $sqlStatements.Add($stmt)
             }
             continue
@@ -198,6 +286,7 @@ function Invoke-VbNetParser {
             $stmt.StartLine = $lineNum
             $stmt.EndLine = $lineNum
             $stmt.SourceFile = $fileName
+            $stmt.MethodName = $currentMethodName
             $sqlStatements.Add($stmt)
             continue
         }
@@ -225,6 +314,31 @@ function Invoke-VbNetParser {
         }
 
         # ================================================
+        # StringBuilder.Append にメソッド呼び出しが渡されている場合（部分抽出）
+        # 例: sb.Append(BuildWithCteBlock("SELECT A, B, C FROM M_REF_TABLE "))
+        # ================================================
+        if ($trimmed -match '(?i)^(\w+)\.Append(?:Line)?\s*\(\s*([a-zA-Z_][\w.]*\s*\(.*\))\s*\)') {
+            $sbVarName = $Matches[1]
+            $callExpr  = $Matches[2].Trim()
+            $placeholder = "/*:${callExpr}*/"
+
+            if (-not $sbVars.ContainsKey($sbVarName)) {
+                $sbVars[$sbVarName] = @{
+                    Fragments = [System.Collections.Generic.List[string]]::new()
+                    StartLine = $lineNum
+                    EndLine   = $lineNum
+                }
+            }
+            $sbVars[$sbVarName].Fragments.Add($placeholder)
+            $sbVars[$sbVarName].EndLine = $lineNum
+            $lastFragmentsList = $sbVars[$sbVarName].Fragments
+            $lastVarName = $sbVarName
+            $lastVarSource = $sbVars
+            Write-Log -Level WARN -Message "Line ${lineNum}: メソッド呼び出し '$callExpr' を含むAppendを検出。SQL断片は不完全な可能性があります" -LogFile $LogFile
+            continue
+        }
+
+        # ================================================
         # Dim sql As String = "SELECT ..." の検出
         # ================================================
         if ($trimmed -match '(?i)^Dim\s+(\w+)\s+As\s+String\s*=\s*(.+)$') {
@@ -232,7 +346,7 @@ function Invoke-VbNetParser {
             $assignExpr = $Matches[2].Trim()
             $sqlPart = Extract-VbNetSqlFromExpression -Expression $assignExpr
 
-            if ($sqlPart -and $sqlPart -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+            if ($sqlPart -and $sqlPart -match '(?i)^\s*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
                 # 同名変数に既存断片がある場合は先に確定させる
                 if ($dynamicSqlVars.ContainsKey($varName) -and $dynamicSqlVars[$varName].Fragments.Count -gt 0) {
                     $prevInfo = $dynamicSqlVars[$varName]
@@ -245,6 +359,7 @@ function Invoke-VbNetParser {
                     $prevStmt.StartLine = $prevInfo.StartLine
                     $prevStmt.EndLine = $lineNum - 1
                     $prevStmt.SourceFile = $fileName
+                    $prevStmt.MethodName = $currentMethodName
                     $sqlStatements.Add($prevStmt)
                 }
                 # 新規代入
@@ -321,7 +436,7 @@ function Invoke-VbNetParser {
             # {0}, {1} をプレースホルダに変換
             $formatSql = Convert-ToPlaceholder -SqlText $formatSql -Language 'vbnet'
 
-            if ($formatSql -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+            if ($formatSql -match '(?i)^\s*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
                 $stmt = New-SqlStatement
                 $stmt.Sql = $formatSql
                 $stmt.Type = Get-SqlType -SqlText $formatSql
@@ -341,7 +456,7 @@ function Invoke-VbNetParser {
             $interpSql = $Matches[1]
             $interpSql = Convert-ToPlaceholder -SqlText $interpSql -Language 'vbnet'
 
-            if ($interpSql -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+            if ($interpSql -match '(?i)^\s*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
                 $stmt = New-SqlStatement
                 $stmt.Sql = $interpSql
                 $stmt.Type = Get-SqlType -SqlText $interpSql
@@ -372,6 +487,7 @@ function Invoke-VbNetParser {
             $stmt.StartLine = $varInfo.StartLine
             $stmt.EndLine = $varInfo.EndLine
             $stmt.SourceFile = $fileName
+            $stmt.MethodName = $currentMethodName
             $sqlStatements.Add($stmt)
         }
     }
@@ -386,7 +502,8 @@ function Invoke-VbNetParser {
             $mergedSql = Merge-DynamicSql -Fragments $sbInfo.Fragments.ToArray()
             $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
 
-            if ($mergedSql -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+            # プレースホルダ /*:...*/ が先頭に来る場合も考慮してSQLキーワードを検出
+            if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
                 $stmt = New-SqlStatement
                 $stmt.Sql = $mergedSql
                 $stmt.Type = Get-SqlType -SqlText $mergedSql
@@ -394,6 +511,7 @@ function Invoke-VbNetParser {
                 $stmt.StartLine = $sbInfo.StartLine
                 $stmt.EndLine = $sbInfo.EndLine
                 $stmt.SourceFile = $fileName
+                $stmt.MethodName = $currentMethodName
                 $sqlStatements.Add($stmt)
             }
         }

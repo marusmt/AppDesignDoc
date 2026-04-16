@@ -13,12 +13,16 @@
     言語指定: "plsql" | "vbnet" | "auto"（省略時: auto）
 .PARAMETER Encoding
     文字コード（省略時: UTF8）
+.PARAMETER OutputFormat
+    出力形式: "PerSql"（SQL毎に個別ファイル、省略時）| "PerSource"（ソースファイル単位で1ファイル）
 .EXAMPLE
     .\Extract-Sql.ps1 -InputPath "./src/OrderProc.pkb"
 .EXAMPLE
     .\Extract-Sql.ps1 -InputPath "./src" -OutputDir "./sql_output" -Language auto
 .EXAMPLE
     .\Extract-Sql.ps1 -InputPath "./src/OrderForm.vb" -Language vbnet -Encoding UTF8
+.EXAMPLE
+    .\Extract-Sql.ps1 -InputPath "./src/OrderForm.vb" -OutputFormat PerSource
 #>
 
 param(
@@ -34,7 +38,11 @@ param(
     [string]$Language = 'auto',
 
     [Parameter()]
-    [string]$Encoding = 'UTF8'
+    [string]$Encoding = 'UTF8',
+
+    [Parameter()]
+    [ValidateSet('PerSql', 'PerSource')]
+    [string]$OutputFormat = 'PerSql'
 )
 
 # ============================================================
@@ -125,10 +133,11 @@ function Main {
     Write-Host '========================================' -ForegroundColor Green
     Write-Host ''
 
-    Write-Log -Level INFO -Message "InputPath: $InputPath" -LogFile $logFile
-    Write-Log -Level INFO -Message "OutputDir: $OutputDir" -LogFile $logFile
-    Write-Log -Level INFO -Message "Language:  $Language" -LogFile $logFile
-    Write-Log -Level INFO -Message "Encoding:  $Encoding" -LogFile $logFile
+    Write-Log -Level INFO -Message "InputPath:    $InputPath" -LogFile $logFile
+    Write-Log -Level INFO -Message "OutputDir:    $OutputDir" -LogFile $logFile
+    Write-Log -Level INFO -Message "Language:     $Language" -LogFile $logFile
+    Write-Log -Level INFO -Message "Encoding:     $Encoding" -LogFile $logFile
+    Write-Log -Level INFO -Message "OutputFormat: $OutputFormat" -LogFile $logFile
     Write-Host ''
 
     # 入力パスの検証
@@ -197,6 +206,7 @@ function Main {
                     -SourceFileName $file.Name `
                     -OutputDir $OutputDir `
                     -Encoding $Encoding `
+                    -OutputFormat $OutputFormat `
                     -LogFile $logFile
 
                 $totalSqls += $sqlStatements.Count

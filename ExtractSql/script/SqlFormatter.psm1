@@ -17,6 +17,7 @@ class SqlStatement {
     [int]$StartLine
     [int]$EndLine
     [string]$SourceFile
+    [string]$MethodName    # 抽出元のメソッド名（Sub/Function）
     [System.Collections.Generic.List[string]]$BranchComments
 
     SqlStatement() {
@@ -100,6 +101,22 @@ function Format-SqlStatement {
 
     $result = $SqlText.Trim()
 
+    # メソッド呼び出しプレースホルダ /*:method(...)*/  を -- [未展開: ...] コメント行に変換（SQL先頭のみ）
+    # 変数プレースホルダ /*:varName*/ はそのまま保持する
+    $prefixComments = [System.Collections.Generic.List[string]]::new()
+    while ($result.StartsWith('/*:')) {
+        $closingIdx = $result.IndexOf('*/')
+        if ($closingIdx -lt 0) { break }
+        $content = $result.Substring(3, $closingIdx - 3).Trim()
+        # メソッド呼び出し形式（識別子 + 括弧）の場合のみ変換
+        if ($content -match '^[a-zA-Z_][\w.]*\s*\(') {
+            $prefixComments.Add("-- [未展開: ${content}]")
+            $result = $result.Substring($closingIdx + 2).TrimStart()
+        } else {
+            break
+        }
+    }
+
     # SQLキーワードを大文字に統一
     $keywords = @(
         'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT',
@@ -153,6 +170,11 @@ function Format-SqlStatement {
         $result += ';'
     }
 
+    # 先頭のメソッド呼び出しコメント行を付与
+    if ($prefixComments.Count -gt 0) {
+        $result = ($prefixComments -join "`n") + "`n" + $result
+    }
+
     return $result
 }
 
@@ -166,10 +188,12 @@ function Get-SqlType {
         [string]$SqlText
     )
 
-    $trimmed = $SqlText.TrimStart()
+    # プレースホルダ /*:...*/ が先頭に来る場合は除去してからキーワード判定
+    $trimmed = ($SqlText.TrimStart() -replace '^(?:/\*:.*?\*/\s*)+', '').TrimStart()
 
     switch -Regex ($trimmed) {
         '^(?i)SELECT'  { return 'SELECT' }
+        '^(?i)WITH'    { return 'SELECT' }
         '^(?i)INSERT'  { return 'INSERT' }
         '^(?i)UPDATE'  { return 'UPDATE' }
         '^(?i)DELETE'  { return 'DELETE' }
@@ -203,6 +227,10 @@ function Export-SqlFiles {
         [string]$Encoding = 'UTF8',
 
         [Parameter()]
+        [ValidateSet('PerSql', 'PerSource')]
+        [string]$OutputFormat = 'PerSql',
+
+        [Parameter()]
         [string]$LogFile = ''
     )
 
@@ -213,35 +241,70 @@ function Export-SqlFiles {
     }
 
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($SourceFileName)
-    $counter = 0
     $outputFiles = @()
+    $totalCount = $SqlStatements.Count
 
-    foreach ($stmt in $SqlStatements) {
-        $counter++
-        $seqNum = $counter.ToString('D3')
-        $outputFileName = "${baseName}_${seqNum}.sql"
+    if ($OutputFormat -eq 'PerSource') {
+        # ----------------------------------------
+        # PerSource: ソースファイル単位で1ファイルに出力
+        # ----------------------------------------
+        $outputFileName = "${baseName}.sql"
         $outputPath = Join-Path $OutputDir $outputFileName
+        $contentParts = [System.Collections.Generic.List[string]]::new()
 
-        # ヘッダコメント生成
-        $header = @"
+        $counter = 0
+        foreach ($stmt in $SqlStatements) {
+            $counter++
+            $methodLine = if ($stmt.MethodName) { "`n-- Method: $($stmt.MethodName)" } else { '' }
+            $header = @"
 -- ============================================
--- Source: $SourceFileName
+-- Source: $SourceFileName$methodLine
+-- SQL: $counter / $totalCount
 -- Line: $($stmt.StartLine)-$($stmt.EndLine)
 -- Type: $($stmt.Type) ($($stmt.Category))
 -- Extracted: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 -- ============================================
 
 "@
+            $formattedSql = Format-SqlStatement -SqlText $stmt.Sql
+            $contentParts.Add($header + $formattedSql)
+        }
 
-        # SQL文を整形
-        $formattedSql = Format-SqlStatement -SqlText $stmt.Sql
-
-        # ファイル書き込み
-        $content = $header + $formattedSql
+        $content = $contentParts -join "`n`n"
         $content | Out-File -FilePath $outputPath -Encoding $Encoding -Force
 
         $outputFiles += $outputPath
-        Write-Log -Level INFO -Message "Output: $outputPath" -LogFile $LogFile
+        Write-Log -Level INFO -Message "Output: $outputPath ($totalCount SQLs)" -LogFile $LogFile
+    }
+    else {
+        # ----------------------------------------
+        # PerSql: SQL毎に個別ファイルに出力（既存動作）
+        # ----------------------------------------
+        $counter = 0
+        foreach ($stmt in $SqlStatements) {
+            $counter++
+            $seqNum = $counter.ToString('D3')
+            $outputFileName = "${baseName}_${seqNum}.sql"
+            $outputPath = Join-Path $OutputDir $outputFileName
+
+            $methodLine = if ($stmt.MethodName) { "`n-- Method: $($stmt.MethodName)" } else { '' }
+            $header = @"
+-- ============================================
+-- Source: $SourceFileName$methodLine
+-- Line: $($stmt.StartLine)-$($stmt.EndLine)
+-- Type: $($stmt.Type) ($($stmt.Category))
+-- Extracted: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+-- ============================================
+
+"@
+            $formattedSql = Format-SqlStatement -SqlText $stmt.Sql
+
+            $content = $header + $formattedSql
+            $content | Out-File -FilePath $outputPath -Encoding $Encoding -Force
+
+            $outputFiles += $outputPath
+            Write-Log -Level INFO -Message "Output: $outputPath" -LogFile $LogFile
+        }
     }
 
     return $outputFiles
