@@ -222,7 +222,8 @@ function Invoke-PlSqlParser {
 
                     while ($m -le $j -and -not $innerSql.TrimEnd().EndsWith(';')) {
                         $nextMLine = Remove-PlSqlInlineComment -Line $lines[$m].Trim()
-                        if ($nextMLine -match '(?i)^(IF|ELSIF|LOOP|FOR|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
+                        if ($nextMLine -match '(?i)^(IF|ELSIF|LOOP|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
+                            ($nextMLine -match '(?i)^FOR\b' -and $nextMLine -notmatch '(?i)^FOR\s+UPDATE\b') -or
                             $nextMLine -match '(?i)^ELSE\s*$' -or
                             $nextMLine -match '(?i)^END\b' -or
                             $nextMLine -match '^--') {
@@ -459,7 +460,9 @@ function Invoke-PlSqlParser {
                 $nextCursorLine = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
 
                 # PL/SQL制御構文に到達したら終了
-                if ($nextCursorLine -match '(?i)^(BEGIN|IF|ELSIF|LOOP|FOR|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
+                # FOR UPDATE / FOR UPDATE OF は SQL のロック句なので FOR ループと区別する
+                if ($nextCursorLine -match '(?i)^(BEGIN|IF|ELSIF|LOOP|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
+                    ($nextCursorLine -match '(?i)^FOR\b' -and $nextCursorLine -notmatch '(?i)^FOR\s+UPDATE\b') -or
                     $nextCursorLine -match '(?i)^ELSE\s*$' -or
                     $nextCursorLine -match '(?i)^END\s*(\w+\s*)?;') {
                     $i--
@@ -495,6 +498,11 @@ function Invoke-PlSqlParser {
             # 先頭行もインラインコメントを除去してから使用
             $staticSql = Remove-PlSqlInlineComment -Line $trimmed
 
+            # CASE式のネストレベルを追跡（CASE内のELSEをPL/SQL ELSE と誤検知しないため）
+            $caseNestLevel = ([regex]::Matches($staticSql, '(?i)\bCASE\b')).Count - `
+                             ([regex]::Matches($staticSql, '(?i)\bEND\b')).Count
+            if ($caseNestLevel -lt 0) { $caseNestLevel = 0 }
+
             # 複数行にまたがるSQL文を収集
             while (-not $staticSql.TrimEnd().EndsWith(';') -and ($i + 1) -lt $lines.Count) {
                 $i++
@@ -502,14 +510,22 @@ function Invoke-PlSqlParser {
                 $nextLine = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
 
                 # PL/SQL制御構文に到達したら終了
-                # CASE式の ELSE は "ELSE 式" の形なので、単独の ELSE のみ終了と判断する
-                if ($nextLine -match '(?i)^(BEGIN|IF|ELSIF|LOOP|FOR|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
-                    $nextLine -match '(?i)^ELSE\s*$' -or
+                # CASE式内の ELSE はネストレベルが1以上の場合はスキップ
+                # FOR UPDATE / FOR UPDATE OF は SQL のロック句なので FOR ループと区別する
+                if ($nextLine -match '(?i)^(BEGIN|IF|ELSIF|LOOP|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
+                    ($nextLine -match '(?i)^FOR\b' -and $nextLine -notmatch '(?i)^FOR\s+UPDATE\b') -or
+                    ($nextLine -match '(?i)^ELSE\s*$' -and $caseNestLevel -le 0) -or
                     $nextLine -match '(?i)^END\s*(\w+\s*)?;') {
                     $i--
                     $lineNum = $i + 1
                     break
                 }
+
+                # CASE/ENDネストレベルを更新
+                $caseNestLevel += ([regex]::Matches($nextLine, '(?i)\bCASE\b')).Count
+                $caseNestLevel -= ([regex]::Matches($nextLine, '(?i)\bEND\b')).Count
+                if ($caseNestLevel -lt 0) { $caseNestLevel = 0 }
+
                 $staticSql += "`n" + $nextLine
             }
             $staticSql = $staticSql.TrimEnd(';').Trim()
