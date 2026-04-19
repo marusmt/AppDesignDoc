@@ -220,15 +220,26 @@ function Invoke-PlSqlParser {
                     $innerSql = Remove-PlSqlInlineComment -Line $mTrimmed
                     $m++
 
+                    # CASE式のネストレベルを追跡（CASE内のELSEをPL/SQL ELSE と誤検知しないため）
+                    $innerCaseNestLevel = ([regex]::Matches($innerSql, '(?i)\bCASE\b')).Count - `
+                                         ([regex]::Matches($innerSql, '(?i)\bEND\b')).Count
+                    if ($innerCaseNestLevel -lt 0) { $innerCaseNestLevel = 0 }
+
                     while ($m -le $j -and -not $innerSql.TrimEnd().EndsWith(';')) {
                         $nextMLine = Remove-PlSqlInlineComment -Line $lines[$m].Trim()
                         if ($nextMLine -match '(?i)^(IF|ELSIF|LOOP|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
                             ($nextMLine -match '(?i)^FOR\b' -and $nextMLine -notmatch '(?i)^FOR\s+UPDATE\b') -or
-                            $nextMLine -match '(?i)^ELSE\s*$' -or
-                            $nextMLine -match '(?i)^END\b' -or
+                            ($nextMLine -match '(?i)^ELSE\s*$' -and $innerCaseNestLevel -le 0) -or
+                            ($nextMLine -match '(?i)^END\b' -and $innerCaseNestLevel -le 0) -or
                             $nextMLine -match '^--') {
                             break
                         }
+
+                        # CASE/ENDネストレベルを更新
+                        $innerCaseNestLevel += ([regex]::Matches($nextMLine, '(?i)\bCASE\b')).Count
+                        $innerCaseNestLevel -= ([regex]::Matches($nextMLine, '(?i)\bEND\b')).Count
+                        if ($innerCaseNestLevel -lt 0) { $innerCaseNestLevel = 0 }
+
                         $innerSql += "`n" + $nextMLine
                         $m++
                     }
