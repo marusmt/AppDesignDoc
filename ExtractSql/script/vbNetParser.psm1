@@ -103,7 +103,7 @@ function Invoke-VbNetParser {
         # 例: Public Sub LoadData() / Private Function BuildSql(...) As String
         # End Sub/Function が検出されなかった場合の保険として、蓄積済みSQLをここで確定する
         # ================================================
-        if ($trimmed -match '(?i)\b(?:Sub|Function)\s+(\w+)\s*\(') {
+        if ($trimmed -match '(?i)\b(?:Sub|Function)\s+(\w+)') {
             if ($dynamicSqlVars.Count -gt 0 -or $sbVars.Count -gt 0) {
                 foreach ($varEntry in $dynamicSqlVars.GetEnumerator()) {
                     $varInfo = $varEntry.Value
@@ -342,11 +342,36 @@ function Invoke-VbNetParser {
             $sbVarName = $Matches[1]
             $sqlPart = $Matches[2] -replace '""', '"'
 
+            # 別メソッドで同名変数が使われていた場合は既存断片を確定してリセット
+            if ($sbVars.ContainsKey($sbVarName) -and $sbVars[$sbVarName].MethodName -ne $currentMethodName) {
+                $prevInfo = $sbVars[$sbVarName]
+                if ($prevInfo.Fragments.Count -gt 0) {
+                    $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
+                    $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
+                    if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                        $prevStmt = New-SqlStatement
+                        $prevStmt.Sql = $prevMerged
+                        $prevStmt.Type = Get-SqlType -SqlText $prevMerged
+                        $prevStmt.Category = 'Dynamic'
+                        $prevStmt.StartLine = $prevInfo.StartLine
+                        $prevStmt.EndLine = $lineNum - 1
+                        $prevStmt.SourceFile = $fileName
+                        $prevStmt.MethodName = $prevInfo.MethodName
+                        $sqlStatements.Add($prevStmt)
+                    }
+                }
+                $sbVars.Remove($sbVarName)
+                $lastFragmentsList = $null
+                $lastVarName = $null
+                $lastVarSource = $null
+            }
+
             if (-not $sbVars.ContainsKey($sbVarName)) {
                 $sbVars[$sbVarName] = @{
-                    Fragments = [System.Collections.Generic.List[string]]::new()
-                    StartLine = $lineNum
-                    EndLine   = $lineNum
+                    Fragments  = [System.Collections.Generic.List[string]]::new()
+                    StartLine  = $lineNum
+                    EndLine    = $lineNum
+                    MethodName = $currentMethodName
                 }
             }
             $sbVars[$sbVarName].Fragments.Add($sqlPart)
@@ -366,11 +391,36 @@ function Invoke-VbNetParser {
             $callExpr  = $Matches[2].Trim()
             $placeholder = "/*:${callExpr}*/"
 
+            # 別メソッドで同名変数が使われていた場合は既存断片を確定してリセット
+            if ($sbVars.ContainsKey($sbVarName) -and $sbVars[$sbVarName].MethodName -ne $currentMethodName) {
+                $prevInfo = $sbVars[$sbVarName]
+                if ($prevInfo.Fragments.Count -gt 0) {
+                    $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
+                    $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
+                    if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                        $prevStmt = New-SqlStatement
+                        $prevStmt.Sql = $prevMerged
+                        $prevStmt.Type = Get-SqlType -SqlText $prevMerged
+                        $prevStmt.Category = 'Dynamic'
+                        $prevStmt.StartLine = $prevInfo.StartLine
+                        $prevStmt.EndLine = $lineNum - 1
+                        $prevStmt.SourceFile = $fileName
+                        $prevStmt.MethodName = $prevInfo.MethodName
+                        $sqlStatements.Add($prevStmt)
+                    }
+                }
+                $sbVars.Remove($sbVarName)
+                $lastFragmentsList = $null
+                $lastVarName = $null
+                $lastVarSource = $null
+            }
+
             if (-not $sbVars.ContainsKey($sbVarName)) {
                 $sbVars[$sbVarName] = @{
-                    Fragments = [System.Collections.Generic.List[string]]::new()
-                    StartLine = $lineNum
-                    EndLine   = $lineNum
+                    Fragments  = [System.Collections.Generic.List[string]]::new()
+                    StartLine  = $lineNum
+                    EndLine    = $lineNum
+                    MethodName = $currentMethodName
                 }
             }
             $sbVars[$sbVarName].Fragments.Add($placeholder)
