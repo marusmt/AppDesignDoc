@@ -478,7 +478,7 @@ function Invoke-VbNetParser {
         # sb = New StringBuilder() によるリセット検出
         # 同一メソッド内で同名変数を再生成して既存断片を確定する
         # ================================================
-        if ($trimmed -match '(?i)^(\w+)\s*=\s*New\s+(?:System\.Text\.)?StringBuilder\s*\(') {
+        if ($trimmed -match '(?i)^(\w+)\s*=\s*New\s+(?:System\.Text\.)?StringBuilder\b') {
             $sbVarName = $Matches[1]
             if ($sbVars.ContainsKey($sbVarName) -and $sbVars[$sbVarName].Fragments.Count -gt 0) {
                 $prevInfo = $sbVars[$sbVarName]
