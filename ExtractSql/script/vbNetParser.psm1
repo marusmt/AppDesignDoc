@@ -141,11 +141,12 @@ function Invoke-VbNetParser {
                 }
                 $dynamicSqlVars = @{}
                 $sbVars = @{}
-                $lastFragmentsList = $null
-                $lastVarName = $null
-                $lastVarSource = $null
-                $currentWithVar = $null
             }
+            # 蓄積変数の有無にかかわらず常にリセット（前メソッドの残存参照を確実にクリア）
+            $lastFragmentsList = $null
+            $lastVarName = $null
+            $lastVarSource = $null
+            $currentWithVar = $null
             $currentMethodName = $Matches[1]
             continue
         }
@@ -454,11 +455,10 @@ function Invoke-VbNetParser {
                     $sqlStatements.Add($prevStmt)
                 }
                 $sbVars.Remove($sbVarName)
-                if ($lastVarName -eq $sbVarName) {
-                    $lastFragmentsList = $null
-                    $lastVarName = $null
-                    $lastVarSource = $null
-                }
+                # 最後に追跡した変数にかかわらず常にリセット（残存参照を確実にクリア）
+                $lastFragmentsList = $null
+                $lastVarName = $null
+                $lastVarSource = $null
             }
             continue
         }
