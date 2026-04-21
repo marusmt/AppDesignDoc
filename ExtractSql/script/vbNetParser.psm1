@@ -339,6 +339,37 @@ function Invoke-VbNetParser {
         }
 
         # ================================================
+        # Dim varName As New StringBuilder の検出
+        # 同名変数の再宣言時に既存断片を確定してリセットする
+        # ================================================
+        if ($trimmed -match '(?i)^Dim\s+(\w+)\s+As\s+New\s+(?:System\.Text\.)?StringBuilder\b') {
+            $sbVarName = $Matches[1]
+            if ($sbVars.ContainsKey($sbVarName) -and $sbVars[$sbVarName].Fragments.Count -gt 0) {
+                $prevInfo = $sbVars[$sbVarName]
+                $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
+                $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
+                if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                    $prevStmt = New-SqlStatement
+                    $prevStmt.Sql = $prevMerged
+                    $prevStmt.Type = Get-SqlType -SqlText $prevMerged
+                    $prevStmt.Category = 'Dynamic'
+                    $prevStmt.StartLine = $prevInfo.StartLine
+                    $prevStmt.EndLine = $lineNum - 1
+                    $prevStmt.SourceFile = $fileName
+                    $prevStmt.MethodName = $currentMethodName
+                    $sqlStatements.Add($prevStmt)
+                }
+                $sbVars.Remove($sbVarName)
+                if ($lastVarName -eq $sbVarName) {
+                    $lastFragmentsList = $null
+                    $lastVarName = $null
+                    $lastVarSource = $null
+                }
+            }
+            continue
+        }
+
+        # ================================================
         # Dim sql As String = "SELECT ..." の検出
         # ================================================
         if ($trimmed -match '(?i)^Dim\s+(\w+)\s+As\s+String\s*=\s*(.+)$') {

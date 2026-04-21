@@ -161,8 +161,8 @@ function Format-SqlStatement {
         $result = $result -replace '__PROTECTED_AND__', 'AND'
     }
 
-    # 連続する空行を除去
-    $result = [regex]::Replace($result, '(\r?\n){3,}', "`n`n")
+    # 空行を除去
+    $result = ($result -split '\r?\n' | Where-Object { $_.Trim() -ne '' }) -join "`n"
 
     # 末尾セミコロン付与
     $result = $result.TrimEnd()

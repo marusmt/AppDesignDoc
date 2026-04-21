@@ -99,6 +99,11 @@ function Invoke-PlSqlParser {
     $lastFragmentsList = $null
     $lastVarName = $null
 
+    # EXCEPTIONブロック追跡: ハンドラ内の変数代入を動的SQLと誤認しないためのフラグ
+    $inExceptionBlock = $false
+    $beginNestLevel = 0
+    $exceptionNestLevel = -1
+
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $lineNum = $i + 1
         $line = $lines[$i]
@@ -120,6 +125,26 @@ function Invoke-PlSqlParser {
 
         # 行コメントのスキップ
         if ($trimmed -match '^--') {
+            continue
+        }
+
+        # ================================================
+        # BEGIN/ENDネストレベルの追跡とEXCEPTIONブロック検出
+        # ================================================
+        if ($trimmed -match '(?i)^BEGIN\b') {
+            $beginNestLevel++
+        }
+        if ($trimmed -match '(?i)^END\b') {
+            if ($inExceptionBlock -and $beginNestLevel -le $exceptionNestLevel) {
+                $inExceptionBlock = $false
+                $exceptionNestLevel = -1
+            }
+            $beginNestLevel--
+            if ($beginNestLevel -lt 0) { $beginNestLevel = 0 }
+        }
+        if ($trimmed -match '(?i)^EXCEPTION\b') {
+            $inExceptionBlock = $true
+            $exceptionNestLevel = $beginNestLevel
             continue
         }
 
@@ -389,7 +414,7 @@ function Invoke-PlSqlParser {
         # 動的SQL変数への代入の検出
         # v_sql := 'SELECT ...'; / v_sql := v_sql || '...';
         # ================================================
-        if ($trimmed -match "(?i)^(\w+)\s*:=\s*(.+?)\s*;\s*$") {
+        if (-not $inExceptionBlock -and $trimmed -match "(?i)^(\w+)\s*:=\s*(.+?)\s*;\s*$") {
             $varName = $Matches[1]
             $assignExpr = $Matches[2]
 
