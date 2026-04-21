@@ -161,6 +161,11 @@ function Format-SqlStatement {
         $result = $result -replace '__PROTECTED_AND__', 'AND'
     }
 
+    # 分岐コメント /* [Branch N] ... */ の前後に改行を付与して視覚的に分離する
+    # 句キーワード改行の後に処理することで FROM/WHERE 等の改行も正常に機能する
+    # /*:varName*/ プレースホルダとは区別するため [Branch を明示的に検索する
+    $result = [regex]::Replace($result, '\s*(/\*\s*\[Branch\s+\d+\][^*]*\*/)\s*', "`n`$1`n  ")
+
     # 空行を除去
     $result = ($result -split '\r?\n' | Where-Object { $_.Trim() -ne '' }) -join "`n"
 
@@ -396,7 +401,7 @@ function Expand-IfBranches {
         if ($line -match $ifPattern -and $nestLevel -eq 0) {
             $branchCount++
             $currentCondition = $Matches[1]
-            $result.Add("-- [Branch $branchCount] $currentCondition")
+            $result.Add("/* [Branch $branchCount] $currentCondition */")
             $inBranch = $true
             $nestLevel = 1
             continue
@@ -418,14 +423,14 @@ function Expand-IfBranches {
         if ($line -match $elsifPattern -and $nestLevel -eq 1) {
             $branchCount++
             $currentCondition = $Matches[1]
-            $result.Add("-- [Branch $branchCount] $currentCondition")
+            $result.Add("/* [Branch $branchCount] $currentCondition */")
             continue
         }
 
         # ELSE
         if ($line -match $elsePattern -and $nestLevel -eq 1) {
             $branchCount++
-            $result.Add("-- [Branch $branchCount] ELSE")
+            $result.Add("/* [Branch $branchCount] ELSE */")
             continue
         }
 

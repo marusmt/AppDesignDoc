@@ -311,6 +311,8 @@ function Invoke-VbNetParser {
             $cmdExpr = $Matches[1].Trim()
             # varName.ToString() / varName.ToString はsbVarsで追跡済みのためスキップ
             if ($cmdExpr -match '(?i)^\w+\.ToString\b') { continue }
+            # 文字列リテラルを含まない場合は変数/メソッド参照のためスキップ
+            if ($cmdExpr -notmatch '"') { continue }
             $sql = Extract-VbNetSqlFromExpression -Expression $cmdExpr
 
             if ($sql) {
@@ -465,6 +467,63 @@ function Invoke-VbNetParser {
                 }
                 $sbVars.Remove($sbVarName)
                 # 最後に追跡した変数にかかわらず常にリセット（残存参照を確実にクリア）
+                $lastFragmentsList = $null
+                $lastVarName = $null
+                $lastVarSource = $null
+            }
+            continue
+        }
+
+        # ================================================
+        # sb = New StringBuilder() によるリセット検出
+        # 同一メソッド内で同名変数を再生成して既存断片を確定する
+        # ================================================
+        if ($trimmed -match '(?i)^(\w+)\s*=\s*New\s+(?:System\.Text\.)?StringBuilder\s*\(') {
+            $sbVarName = $Matches[1]
+            if ($sbVars.ContainsKey($sbVarName) -and $sbVars[$sbVarName].Fragments.Count -gt 0) {
+                $prevInfo = $sbVars[$sbVarName]
+                $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
+                $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
+                if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                    $prevStmt = New-SqlStatement
+                    $prevStmt.Sql = $prevMerged
+                    $prevStmt.Type = Get-SqlType -SqlText $prevMerged
+                    $prevStmt.Category = 'Dynamic'
+                    $prevStmt.StartLine = $prevInfo.StartLine
+                    $prevStmt.EndLine = $lineNum - 1
+                    $prevStmt.SourceFile = $fileName
+                    $prevStmt.MethodName = $currentMethodName
+                    $sqlStatements.Add($prevStmt)
+                }
+                $sbVars.Remove($sbVarName)
+                $lastFragmentsList = $null
+                $lastVarName = $null
+                $lastVarSource = $null
+            }
+            continue
+        }
+
+        # ================================================
+        # sb.Clear() によるリセット検出
+        # ================================================
+        if ($trimmed -match '(?i)^(\w+)\.Clear\s*\(\s*\)\s*$') {
+            $sbVarName = $Matches[1]
+            if ($sbVars.ContainsKey($sbVarName) -and $sbVars[$sbVarName].Fragments.Count -gt 0) {
+                $prevInfo = $sbVars[$sbVarName]
+                $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
+                $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
+                if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                    $prevStmt = New-SqlStatement
+                    $prevStmt.Sql = $prevMerged
+                    $prevStmt.Type = Get-SqlType -SqlText $prevMerged
+                    $prevStmt.Category = 'Dynamic'
+                    $prevStmt.StartLine = $prevInfo.StartLine
+                    $prevStmt.EndLine = $lineNum - 1
+                    $prevStmt.SourceFile = $fileName
+                    $prevStmt.MethodName = $currentMethodName
+                    $sqlStatements.Add($prevStmt)
+                }
+                $sbVars.Remove($sbVarName)
                 $lastFragmentsList = $null
                 $lastVarName = $null
                 $lastVarSource = $null
