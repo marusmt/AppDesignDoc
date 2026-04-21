@@ -396,7 +396,9 @@ function Expand-IfBranches {
         $nestedIfPattern = '(?i)^\s*If\s+'
     }
 
-    foreach ($line in $Lines) {
+    foreach ($rawLine in $Lines) {
+        # Windows CRLF 対策: \r を除去して正規化
+        $line = $rawLine.TrimEnd("`r")
         # IF開始
         if ($line -match $ifPattern -and $nestLevel -eq 0) {
             $branchCount++

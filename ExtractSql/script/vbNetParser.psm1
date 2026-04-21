@@ -754,7 +754,8 @@ function Join-VbNetContinuationLines {
                 $buffer = ''
             }
             else {
-                $resultLines.Add($Lines[$i])
+                # $trimmed (TrimEnd済み) を使用し CRLF の \r を確実に除去する
+                $resultLines.Add($trimmed)
                 $resultNums.Add($i + 1)
             }
         }
