@@ -56,7 +56,6 @@ function Invoke-VbNetParser {
     $lastVarSource = $null    # 最後に更新されたハッシュテーブル（$dynamicSqlVars または $sbVars）
     $currentWithVar = $null   # With ブロックで対象となっている変数名
 
-    $inBlockComment = $false
     $currentMethodName = ''   # 現在処理中のメソッド名（Sub/Function）
 
     for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -102,8 +101,51 @@ function Invoke-VbNetParser {
         # ================================================
         # メソッド（Sub/Function）宣言の検出
         # 例: Public Sub LoadData() / Private Function BuildSql(...) As String
+        # End Sub/Function が検出されなかった場合の保険として、蓄積済みSQLをここで確定する
         # ================================================
         if ($trimmed -match '(?i)\b(?:Sub|Function)\s+(\w+)\s*\(') {
+            if ($dynamicSqlVars.Count -gt 0 -or $sbVars.Count -gt 0) {
+                foreach ($varEntry in $dynamicSqlVars.GetEnumerator()) {
+                    $varInfo = $varEntry.Value
+                    if ($varInfo.Fragments.Count -gt 0) {
+                        $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray()
+                        $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
+                        $stmt = New-SqlStatement
+                        $stmt.Sql = $mergedSql
+                        $stmt.Type = Get-SqlType -SqlText $mergedSql
+                        $stmt.Category = 'Dynamic'
+                        $stmt.StartLine = $varInfo.StartLine
+                        $stmt.EndLine = $varInfo.EndLine
+                        $stmt.SourceFile = $fileName
+                        $stmt.MethodName = $currentMethodName
+                        $sqlStatements.Add($stmt)
+                    }
+                }
+                foreach ($sbEntry in $sbVars.GetEnumerator()) {
+                    $sbInfo = $sbEntry.Value
+                    if ($sbInfo.Fragments.Count -gt 0) {
+                        $mergedSql = Merge-DynamicSql -Fragments $sbInfo.Fragments.ToArray()
+                        $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
+                        if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                            $stmt = New-SqlStatement
+                            $stmt.Sql = $mergedSql
+                            $stmt.Type = Get-SqlType -SqlText $mergedSql
+                            $stmt.Category = 'Dynamic'
+                            $stmt.StartLine = $sbInfo.StartLine
+                            $stmt.EndLine = $sbInfo.EndLine
+                            $stmt.SourceFile = $fileName
+                            $stmt.MethodName = $currentMethodName
+                            $sqlStatements.Add($stmt)
+                        }
+                    }
+                }
+                $dynamicSqlVars = @{}
+                $sbVars = @{}
+                $lastFragmentsList = $null
+                $lastVarName = $null
+                $lastVarSource = $null
+                $currentWithVar = $null
+            }
             $currentMethodName = $Matches[1]
             continue
         }
@@ -257,6 +299,8 @@ function Invoke-VbNetParser {
         # ================================================
         if ($trimmed -match '(?i)\.CommandText\s*=\s*(.+)$') {
             $cmdExpr = $Matches[1].Trim()
+            # varName.ToString() / varName.ToString はsbVarsで追跡済みのためスキップ
+            if ($cmdExpr -match '(?i)^\w+\.ToString\b') { continue }
             $sql = Extract-VbNetSqlFromExpression -Expression $cmdExpr
 
             if ($sql) {
@@ -676,8 +720,8 @@ function Extract-VbNetSqlFromExpression {
         }
         # 変数名 → プレースホルダ
         elseif ($p -match '^[a-zA-Z_][a-zA-Z0-9_.]*(?:\(.*\))?$') {
-            # メソッド呼び出し（ToString()等）は除外
-            if ($p -notmatch '(?i)\.(ToString|Trim|Replace|ToUpper|ToLower)\(') {
+            # メソッド呼び出し（ToString等、括弧あり・なし両方）は除外
+            if ($p -notmatch '(?i)\.(ToString|Trim|Replace|ToUpper|ToLower)\b') {
                 $varName = $p -replace '\(.*\)', ''
                 $fragments.Add("/*:$varName*/")
             }
