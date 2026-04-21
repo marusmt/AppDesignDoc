@@ -110,15 +110,17 @@ function Invoke-VbNetParser {
                     if ($varInfo.Fragments.Count -gt 0) {
                         $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray()
                         $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
-                        $stmt = New-SqlStatement
-                        $stmt.Sql = $mergedSql
-                        $stmt.Type = Get-SqlType -SqlText $mergedSql
-                        $stmt.Category = 'Dynamic'
-                        $stmt.StartLine = $varInfo.StartLine
-                        $stmt.EndLine = $varInfo.EndLine
-                        $stmt.SourceFile = $fileName
-                        $stmt.MethodName = $currentMethodName
-                        $sqlStatements.Add($stmt)
+                        if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                            $stmt = New-SqlStatement
+                            $stmt.Sql = $mergedSql
+                            $stmt.Type = Get-SqlType -SqlText $mergedSql
+                            $stmt.Category = 'Dynamic'
+                            $stmt.StartLine = $varInfo.StartLine
+                            $stmt.EndLine = $varInfo.EndLine
+                            $stmt.SourceFile = $fileName
+                            $stmt.MethodName = $currentMethodName
+                            $sqlStatements.Add($stmt)
+                        }
                     }
                 }
                 foreach ($sbEntry in $sbVars.GetEnumerator()) {
@@ -162,15 +164,17 @@ function Invoke-VbNetParser {
                 if ($varInfo.Fragments.Count -gt 0) {
                     $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray()
                     $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
-                    $stmt = New-SqlStatement
-                    $stmt.Sql = $mergedSql
-                    $stmt.Type = Get-SqlType -SqlText $mergedSql
-                    $stmt.Category = 'Dynamic'
-                    $stmt.StartLine = $varInfo.StartLine
-                    $stmt.EndLine = $varInfo.EndLine
-                    $stmt.SourceFile = $fileName
-                    $stmt.MethodName = $currentMethodName
-                    $sqlStatements.Add($stmt)
+                    if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                        $stmt = New-SqlStatement
+                        $stmt.Sql = $mergedSql
+                        $stmt.Type = Get-SqlType -SqlText $mergedSql
+                        $stmt.Category = 'Dynamic'
+                        $stmt.StartLine = $varInfo.StartLine
+                        $stmt.EndLine = $varInfo.EndLine
+                        $stmt.SourceFile = $fileName
+                        $stmt.MethodName = $currentMethodName
+                        $sqlStatements.Add($stmt)
+                    }
                 }
             }
             foreach ($sbEntry in $sbVars.GetEnumerator()) {
@@ -696,15 +700,18 @@ function Invoke-VbNetParser {
             $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray()
             $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
 
-            $stmt = New-SqlStatement
-            $stmt.Sql = $mergedSql
-            $stmt.Type = Get-SqlType -SqlText $mergedSql
-            $stmt.Category = 'Dynamic'
-            $stmt.StartLine = $varInfo.StartLine
-            $stmt.EndLine = $varInfo.EndLine
-            $stmt.SourceFile = $fileName
-            $stmt.MethodName = $currentMethodName
-            $sqlStatements.Add($stmt)
+            # プレースホルダ /*:...*/ が先頭に来る場合も考慮してSQLキーワードを検出
+            if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                $stmt = New-SqlStatement
+                $stmt.Sql = $mergedSql
+                $stmt.Type = Get-SqlType -SqlText $mergedSql
+                $stmt.Category = 'Dynamic'
+                $stmt.StartLine = $varInfo.StartLine
+                $stmt.EndLine = $varInfo.EndLine
+                $stmt.SourceFile = $fileName
+                $stmt.MethodName = $currentMethodName
+                $sqlStatements.Add($stmt)
+            }
         }
     }
 
