@@ -309,8 +309,31 @@ function Invoke-VbNetParser {
         # ================================================
         if ($trimmed -match '(?i)\.CommandText\s*=\s*(.+)$') {
             $cmdExpr = $Matches[1].Trim()
-            # varName.ToString() / varName.ToString はsbVarsで追跡済みのためスキップ
-            if ($cmdExpr -match '(?i)^\w+\.ToString\b') { continue }
+            # varName.ToString() → sbVarsの断片を確定してリセット（次のAppendが新しいSQLを開始できるよう）
+            if ($cmdExpr -match '(?i)^(\w+)\.ToString\b') {
+                $sbRefName = $Matches[1]
+                if ($sbVars.ContainsKey($sbRefName) -and $sbVars[$sbRefName].Fragments.Count -gt 0) {
+                    $prevInfo = $sbVars[$sbRefName]
+                    $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
+                    $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
+                    if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                        $prevStmt = New-SqlStatement
+                        $prevStmt.Sql = $prevMerged
+                        $prevStmt.Type = Get-SqlType -SqlText $prevMerged
+                        $prevStmt.Category = 'Dynamic'
+                        $prevStmt.StartLine = $prevInfo.StartLine
+                        $prevStmt.EndLine = $lineNum
+                        $prevStmt.SourceFile = $fileName
+                        $prevStmt.MethodName = $currentMethodName
+                        $sqlStatements.Add($prevStmt)
+                    }
+                    $sbVars.Remove($sbRefName)
+                    $lastFragmentsList = $null
+                    $lastVarName = $null
+                    $lastVarSource = $null
+                }
+                continue
+            }
             # 文字列リテラルを含まない場合は変数/メソッド参照のためスキップ
             if ($cmdExpr -notmatch '"') { continue }
             $sql = Extract-VbNetSqlFromExpression -Expression $cmdExpr
