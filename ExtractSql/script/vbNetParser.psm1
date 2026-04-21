@@ -211,6 +211,14 @@ function Invoke-VbNetParser {
 
             for ($j = $i; $j -lt $lines.Count; $j++) {
                 $ifLine = $lines[$j].Trim()
+
+                # メソッド境界（End Sub/Function）でスキャンを停止
+                # 越えると$jが配列外になりEndLine=0になるのを防ぐ
+                if ($ifLine -match '(?i)^End\s+(Sub|Function)\b') {
+                    if ($j -gt $i) { $j-- }
+                    break
+                }
+
                 # 空行はスキップ（Expand-IfBranchesのMandatory[string[]]パラメータが空文字列を拒否するため）
                 if ($ifLine -ne '') {
                     $ifLines.Add($lines[$j])
@@ -282,7 +290,8 @@ function Invoke-VbNetParser {
                         $lastFragmentsList.Add($fragment)
                     }
                     if ($lastVarName -and $lastVarSource -and $lastVarSource.ContainsKey($lastVarName)) {
-                        $lastVarSource[$lastVarName].EndLine = $originalLineNumbers[$j]
+                        $endLineNum = if ($j -lt $originalLineNumbers.Count) { $originalLineNumbers[$j] } else { $originalLineNumbers[$originalLineNumbers.Count - 1] }
+                        $lastVarSource[$lastVarName].EndLine = $endLineNum
                     }
                 }
                 else {
