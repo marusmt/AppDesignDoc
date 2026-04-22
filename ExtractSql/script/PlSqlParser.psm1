@@ -510,7 +510,9 @@ function Invoke-PlSqlParser {
                     $lastVarName = $varName
                 }
                 elseif ($dynamicSqlVars.ContainsKey($varName) -or
-                        $assignExpr -match "(?i)^$varName\s*\|\|") {
+                        ($assignExpr -match "(?i)^$varName\s*\|\|" -and
+                         $sqlPart -and
+                         ($sqlPart -replace '/\*:[^*]+\*/', '').Trim() -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b')) {
                     # 追記代入
                     if (-not $dynamicSqlVars.ContainsKey($varName)) {
                         $dynamicSqlVars[$varName] = @{
@@ -690,29 +692,40 @@ function Extract-PlSqlStringLiterals {
     )
 
     $fragments = [System.Collections.Generic.List[string]]::new()
-    $expr = $Expression
+    $i = 0
+    $len = $Expression.Length
 
-    # 変数名への参照を削除し、文字列リテラルのみ抽出
-    # パターン: 'text' || variable || 'text'
-    $parts = $expr -split '\|\|'
+    while ($i -lt $len) {
+        $ch = $Expression[$i]
 
-    foreach ($part in $parts) {
-        $p = $part.Trim()
-
-        # 文字列リテラル
-        if ($p -match "^'(.*)'$") {
-            $literal = $Matches[1]
-            # PL/SQLのエスケープ: '' → '
-            $literal = $literal -replace "''", "'"
-            $fragments.Add($literal)
-        }
-        # 変数名 → プレースホルダ
-        elseif ($p -match '^[a-zA-Z_][a-zA-Z0-9_.]*$') {
-            $fragments.Add("/*:$p*/")
-        }
-        # 変数 + 追加の文字列を含む部分
-        elseif ($p -match "^(\w+)\s*\|\|") {
-            $fragments.Add("/*:$($Matches[1])*/")
+        if ($ch -eq "'") {
+            # 文字列リテラル: 閉じクォートまで読む（'' はエスケープ）
+            $i++
+            $sb = [System.Text.StringBuilder]::new()
+            while ($i -lt $len) {
+                if ($Expression[$i] -eq "'" -and ($i + 1) -lt $len -and $Expression[$i + 1] -eq "'") {
+                    [void]$sb.Append("'")
+                    $i += 2
+                } elseif ($Expression[$i] -eq "'") {
+                    $i++
+                    break
+                } else {
+                    [void]$sb.Append($Expression[$i])
+                    $i++
+                }
+            }
+            $fragments.Add($sb.ToString())
+        } elseif ([char]::IsLetter($ch) -or $ch -eq '_') {
+            # 識別子（変数名）: 英数字・アンダースコア・ドットを読む
+            $start = $i
+            while ($i -lt $len -and ([char]::IsLetterOrDigit($Expression[$i]) -or $Expression[$i] -eq '_' -or $Expression[$i] -eq '.')) {
+                $i++
+            }
+            $name = $Expression.Substring($start, $i - $start)
+            $fragments.Add("/*:$name*/")
+        } else {
+            # 演算子（||）・空白などをスキップ
+            $i++
         }
     }
 
