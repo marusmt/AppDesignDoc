@@ -18,6 +18,7 @@ class SqlStatement {
     [int]$EndLine
     [string]$SourceFile
     [string]$MethodName    # 抽出元のメソッド名（Sub/Function）
+    [string]$CursorName    # CURSOR 定義名（PL/SQL）
     [System.Collections.Generic.List[string]]$BranchComments
 
     SqlStatement() {
@@ -261,9 +262,10 @@ function Export-SqlFiles {
         foreach ($stmt in $SqlStatements) {
             $counter++
             $methodLine = if ($stmt.MethodName) { "`n-- Method: $($stmt.MethodName)" } else { '' }
+            $cursorLine = if ($stmt.CursorName) { "`n-- Cursor: $($stmt.CursorName)" } else { '' }
             $header = @"
 -- ============================================
--- Source: $SourceFileName$methodLine
+-- Source: $SourceFileName$methodLine$cursorLine
 -- SQL: $counter / $totalCount
 -- Line: $($stmt.StartLine)-$($stmt.EndLine)
 -- Type: $($stmt.Type) ($($stmt.Category))
@@ -293,9 +295,10 @@ function Export-SqlFiles {
             $outputPath = Join-Path $OutputDir $outputFileName
 
             $methodLine = if ($stmt.MethodName) { "`n-- Method: $($stmt.MethodName)" } else { '' }
+            $cursorLine = if ($stmt.CursorName) { "`n-- Cursor: $($stmt.CursorName)" } else { '' }
             $header = @"
 -- ============================================
--- Source: $SourceFileName$methodLine
+-- Source: $SourceFileName$methodLine$cursorLine
 -- Line: $($stmt.StartLine)-$($stmt.EndLine)
 -- Type: $($stmt.Type) ($($stmt.Category))
 -- Extracted: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')

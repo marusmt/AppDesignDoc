@@ -391,7 +391,17 @@ function Invoke-PlSqlParser {
                 # 複数行にまたがる可能性
                 while (-not $sql.EndsWith(';') -and ($i + 1) -lt $lines.Count) {
                     $i++
-                    $nextOpenLine = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
+                    $rawOpenLine = $lines[$i].Trim()
+                    # ブロックコメントのスキップ
+                    if ($inBlockComment) {
+                        if ($rawOpenLine -match '\*/') { $inBlockComment = $false }
+                        continue
+                    }
+                    if ($rawOpenLine -match '^/\*' -and $rawOpenLine -notmatch '\*/') {
+                        $inBlockComment = $true
+                        continue
+                    }
+                    $nextOpenLine = Remove-PlSqlInlineComment -Line $rawOpenLine
                     $sql += "`n" + $nextOpenLine.TrimEnd(';')
                 }
                 $category = 'Static'
@@ -470,8 +480,9 @@ function Invoke-PlSqlParser {
         # CURSOR宣言内のSELECT文
         # CURSOR name IS [sql] または CURSOR name IS（次行以降にSQLが続く場合も対応）
         # ================================================
-        if ($trimmed -match '(?i)^CURSOR\s+\w+\s+IS\b') {
+        if ($trimmed -match '(?i)^CURSOR\s+(\w+)\s+IS\b') {
             $startLine = $lineNum
+            $cursorName = $Matches[1]
 
             # IS の後にSQLが続く場合
             if ($trimmed -match '(?i)^CURSOR\s+\w+\s+IS\s+(.+)') {
@@ -493,7 +504,19 @@ function Invoke-PlSqlParser {
             while (-not $cursorSql.TrimEnd().EndsWith(';') -and ($i + 1) -lt $lines.Count) {
                 $i++
                 $lineNum = $i + 1
-                $nextCursorLine = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
+                $rawCursorLine = $lines[$i].Trim()
+
+                # ブロックコメントのスキップ（/* ... */ が複数行にまたがる場合）
+                if ($inBlockComment) {
+                    if ($rawCursorLine -match '\*/') { $inBlockComment = $false }
+                    continue
+                }
+                if ($rawCursorLine -match '^/\*' -and $rawCursorLine -notmatch '\*/') {
+                    $inBlockComment = $true
+                    continue
+                }
+
+                $nextCursorLine = Remove-PlSqlInlineComment -Line $rawCursorLine
 
                 # PL/SQL制御構文に到達したら終了
                 # FOR UPDATE / FOR UPDATE OF は SQL のロック句なので FOR ループと区別する
@@ -517,6 +540,7 @@ function Invoke-PlSqlParser {
                 $stmt.StartLine = $startLine
                 $stmt.EndLine = $lineNum
                 $stmt.SourceFile = $fileName
+                $stmt.CursorName = $cursorName
                 $sqlStatements.Add($stmt)
             }
             continue
