@@ -422,7 +422,7 @@ function Invoke-PlSqlParser {
             if ($assignExpr -match "'") {
                 $sqlPart = Extract-PlSqlStringLiterals -Expression $assignExpr
 
-                if ($sqlPart -and $sqlPart -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)') {
+                if ($sqlPart -and $sqlPart -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                     # 同名変数に既存の断片がある場合は先に確定させる（複数プロシージャで同名変数が使われる場合の対応）
                     if ($dynamicSqlVars.ContainsKey($varName) -and $dynamicSqlVars[$varName].Fragments.Count -gt 0) {
                         $prevInfo = $dynamicSqlVars[$varName]

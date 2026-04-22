@@ -378,6 +378,7 @@ function Expand-IfBranches {
     $nestLevel = 0
     $inBranch = $false
     $currentCondition = ''
+    $pendingBranchComment = $null  # SQL断片が見つかった時のみ出力する分岐コメントバッファ
 
     # 言語別の正規表現パターン
     if ($Language -eq 'plsql') {
@@ -399,11 +400,15 @@ function Expand-IfBranches {
     foreach ($rawLine in $Lines) {
         # Windows CRLF 対策: \r を除去して正規化
         $line = $rawLine.TrimEnd("`r")
+        # VB.NET コメント行のスキップ（' で始まる行）
+        if ($Language -eq 'vbnet' -and $line.Trim() -match "^\s*'") {
+            continue
+        }
         # IF開始
         if ($line -match $ifPattern -and $nestLevel -eq 0) {
             $branchCount++
             $currentCondition = $Matches[1]
-            $result.Add("/* [Branch $branchCount] $currentCondition */")
+            $pendingBranchComment = "/* [Branch $branchCount] $currentCondition */"
             $inBranch = $true
             $nestLevel = 1
             continue
@@ -425,14 +430,14 @@ function Expand-IfBranches {
         if ($line -match $elsifPattern -and $nestLevel -eq 1) {
             $branchCount++
             $currentCondition = $Matches[1]
-            $result.Add("/* [Branch $branchCount] $currentCondition */")
+            $pendingBranchComment = "/* [Branch $branchCount] $currentCondition */"
             continue
         }
 
         # ELSE
         if ($line -match $elsePattern -and $nestLevel -eq 1) {
             $branchCount++
-            $result.Add("/* [Branch $branchCount] ELSE */")
+            $pendingBranchComment = "/* [Branch $branchCount] ELSE */"
             continue
         }
 
@@ -440,6 +445,7 @@ function Expand-IfBranches {
         if ($line -match $endIfPattern -and $nestLevel -eq 1) {
             $nestLevel = 0
             $inBranch = $false
+            $pendingBranchComment = $null
             continue
         }
 
@@ -447,6 +453,10 @@ function Expand-IfBranches {
         if ($inBranch -or $nestLevel -gt 0) {
             $sqlFragment = & $ExtractSqlFromLine $line
             if ($sqlFragment) {
+                if ($pendingBranchComment) {
+                    $result.Add($pendingBranchComment)
+                    $pendingBranchComment = $null
+                }
                 $result.Add($sqlFragment)
             }
         }
