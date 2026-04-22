@@ -215,10 +215,12 @@ function Invoke-VbNetParser {
 
             for ($j = $i; $j -lt $lines.Count; $j++) {
                 $ifLine = $lines[$j].Trim()
+                # インラインコメント除去後の行をネスト追跡に使用（例: If cond Then 'comment）
+                $ifLineNoComment = Remove-VbNetInlineComment -Line $ifLine
 
                 # メソッド境界（End Sub/Function）でスキャンを停止
                 # 越えると$jが配列外になりEndLine=0になるのを防ぐ
-                if ($ifLine -match '(?i)^End\s+(Sub|Function)\b') {
+                if ($ifLineNoComment -match '(?i)^End\s+(Sub|Function)\b') {
                     if ($j -gt $i) { $j-- }
                     break
                 }
@@ -228,10 +230,10 @@ function Invoke-VbNetParser {
                     $ifLines.Add($lines[$j])
                 }
 
-                if ($ifLine -match '(?i)^\s*If\s+.+\s+Then\s*$') {
+                if ($ifLineNoComment -match '(?i)^\s*If\s+.+\s+Then\s*$') {
                     $ifNestLevel++
                 }
-                if ($ifLine -match '(?i)^\s*End\s+If') {
+                if ($ifLineNoComment -match '(?i)^\s*End\s+If') {
                     $ifNestLevel--
                     if ($ifNestLevel -eq 0) {
                         break
@@ -283,7 +285,12 @@ function Invoke-VbNetParser {
                 $branchResults = @()
             }
             else {
-                $branchResults = Expand-IfBranches -Lines $ifLines.ToArray() `
+                # インラインコメントを除去してExpand-IfBranchesに渡す
+                # （例: "If cond Then 'comment" が $ifPattern にマッチするよう正規化）
+                $ifLinesForExpand = $ifLines.ToArray() | ForEach-Object {
+                    Remove-VbNetInlineComment -Line $_
+                }
+                $branchResults = Expand-IfBranches -Lines $ifLinesForExpand `
                     -Language 'vbnet' -ExtractSqlFromLine $extractSqlFromLine
             }
 
