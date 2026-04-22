@@ -67,6 +67,68 @@ function Remove-PlSqlInlineComment {
 }
 
 # ============================================================
+# Remove-PlSqlBlockComment: ブロックコメントを行単位で除去
+# $InBlockComment: 現在のブロックコメント継続状態（[ref] で更新）
+# 戻り値: ブロックコメント除去後の文字列（ヒント句 /*+ は保持）
+# ============================================================
+function Remove-PlSqlBlockComment {
+    param(
+        [string]$Line,
+        [ref]$InBlockComment
+    )
+
+    $result = [System.Text.StringBuilder]::new()
+    $i = 0
+    $len = $Line.Length
+
+    while ($i -lt $len) {
+        if ($InBlockComment.Value) {
+            # ブロックコメント内: */ を探して終了
+            if ($i + 1 -lt $len -and $Line[$i] -eq '*' -and $Line[$i + 1] -eq '/') {
+                $InBlockComment.Value = $false
+                $i += 2
+            } else {
+                $i++
+            }
+            continue
+        }
+
+        # /* の検出
+        if ($i + 1 -lt $len -and $Line[$i] -eq '/' -and $Line[$i + 1] -eq '*') {
+            # ヒント句 /*+ は保持
+            if ($i + 2 -lt $len -and $Line[$i + 2] -eq '+') {
+                $closeIdx = $Line.IndexOf('*/', $i + 2)
+                if ($closeIdx -ge 0) {
+                    [void]$result.Append($Line.Substring($i, $closeIdx - $i + 2))
+                    $i = $closeIdx + 2
+                } else {
+                    # ヒント句が次行に続く（稀）: 以降をそのまま保持
+                    [void]$result.Append($Line.Substring($i))
+                    $i = $len
+                }
+                continue
+            }
+            # 通常のブロックコメント: 同一行内で */ を探す
+            $closeIdx = $Line.IndexOf('*/', $i + 2)
+            if ($closeIdx -ge 0) {
+                # 同一行で完結 → スキップして */ の後から続ける
+                $i = $closeIdx + 2
+            } else {
+                # 次行以降に続く → フラグをセットして行の残りを破棄
+                $InBlockComment.Value = $true
+                $i = $len
+            }
+            continue
+        }
+
+        [void]$result.Append($Line[$i])
+        $i++
+    }
+
+    return $result.ToString()
+}
+
+# ============================================================
 # Invoke-PlSqlParser: PL/SQLパース実行
 # ============================================================
 function Invoke-PlSqlParser {
@@ -110,18 +172,11 @@ function Invoke-PlSqlParser {
         $trimmed = $line.Trim()
 
         # ================================================
-        # ブロックコメントのスキップ
+        # ブロックコメントのスキップ（/*+ ヒント句は除外）
+        # Remove-PlSqlBlockComment で1行完結・複数行・行中開始を統一処理する
         # ================================================
-        if ($inBlockComment) {
-            if ($trimmed -match '\*/') {
-                $inBlockComment = $false
-            }
-            continue
-        }
-        if ($trimmed -match '^/\*' -and $trimmed -notmatch '\*/') {
-            $inBlockComment = $true
-            continue
-        }
+        $trimmed = (Remove-PlSqlBlockComment -Line $trimmed -InBlockComment ([ref]$inBlockComment)).Trim()
+        if ($trimmed -eq '') { continue }
 
         # 行コメントのスキップ
         if ($trimmed -match '^--') {
@@ -392,15 +447,9 @@ function Invoke-PlSqlParser {
                 while (-not $sql.EndsWith(';') -and ($i + 1) -lt $lines.Count) {
                     $i++
                     $rawOpenLine = $lines[$i].Trim()
-                    # ブロックコメントのスキップ
-                    if ($inBlockComment) {
-                        if ($rawOpenLine -match '\*/') { $inBlockComment = $false }
-                        continue
-                    }
-                    if ($rawOpenLine -match '^/\*' -and $rawOpenLine -notmatch '\*/') {
-                        $inBlockComment = $true
-                        continue
-                    }
+                    # ブロックコメント除去（/*+ ヒント句は保持）
+                    $rawOpenLine = Remove-PlSqlBlockComment -Line $rawOpenLine -InBlockComment ([ref]$inBlockComment)
+                    if ($rawOpenLine.Trim() -eq '') { continue }
                     $nextOpenLine = Remove-PlSqlInlineComment -Line $rawOpenLine
                     $sql += "`n" + $nextOpenLine.TrimEnd(';')
                 }
@@ -506,15 +555,9 @@ function Invoke-PlSqlParser {
                 $lineNum = $i + 1
                 $rawCursorLine = $lines[$i].Trim()
 
-                # ブロックコメントのスキップ（/* ... */ が複数行にまたがる場合）
-                if ($inBlockComment) {
-                    if ($rawCursorLine -match '\*/') { $inBlockComment = $false }
-                    continue
-                }
-                if ($rawCursorLine -match '^/\*' -and $rawCursorLine -notmatch '\*/') {
-                    $inBlockComment = $true
-                    continue
-                }
+                # ブロックコメント除去（/*+ ヒント句は保持、1行完結・複数行・行中開始すべて対応）
+                $rawCursorLine = Remove-PlSqlBlockComment -Line $rawCursorLine -InBlockComment ([ref]$inBlockComment)
+                if ($rawCursorLine.Trim() -eq '') { continue }
 
                 $nextCursorLine = Remove-PlSqlInlineComment -Line $rawCursorLine
 
