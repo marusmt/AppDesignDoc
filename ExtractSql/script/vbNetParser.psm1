@@ -394,17 +394,23 @@ function Invoke-VbNetParser {
                         # $lastFragmentsList が null のケース:
                         # IF 分岐のみで構成されるヘルパーメソッドなど、直前に .Append がない場合。
                         # $ifLinesForExpand から変数名を推定して新しい $sbVars エントリを作成する。
-                        $inferredVarName = $null
-                        foreach ($ifln in $ifLinesForExpand) {
-                            # "varName.Append(...)" 形式
-                            if ($ifln -match '(?i)^\s*(\w+)\.Append(?:Line)?\s*\(') {
-                                $inferredVarName = $Matches[1]
-                                break
-                            }
-                            # "With varName" 形式（With ブロック内の .Append を含むケース）
-                            if ($ifln -match '(?i)^\s*With\s+(\w+)\s*$') {
-                                $inferredVarName = $Matches[1]
-                                break
+                        # 優先度順に変数名を推定:
+                        # 1. With ブロック内の If の場合、外側の $currentWithVar を使う
+                        #    （IF ボディが ".Append(...)" 先頭ドット形式のとき $ifLinesForExpand からは見えない）
+                        # 2. $ifLinesForExpand 内の "varName.Append(...)" または "With varName"
+                        $inferredVarName = $currentWithVar
+                        if (-not $inferredVarName) {
+                            foreach ($ifln in $ifLinesForExpand) {
+                                # "varName.Append(...)" 形式
+                                if ($ifln -match '(?i)^\s*(\w+)\.Append(?:Line)?\s*\(') {
+                                    $inferredVarName = $Matches[1]
+                                    break
+                                }
+                                # "With varName" 形式（With ブロック内の .Append を含むケース）
+                                if ($ifln -match '(?i)^\s*With\s+(\w+)\s*$') {
+                                    $inferredVarName = $Matches[1]
+                                    break
+                                }
                             }
                         }
                         if ($inferredVarName) {
