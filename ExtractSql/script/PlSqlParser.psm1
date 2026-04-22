@@ -306,7 +306,10 @@ function Invoke-PlSqlParser {
                     if ($innerCaseNestLevel -lt 0) { $innerCaseNestLevel = 0 }
 
                     while ($m -le $j -and -not $innerSql.TrimEnd().EndsWith(';')) {
-                        $nextMLine = Remove-PlSqlInlineComment -Line $lines[$m].Trim()
+                        $rawMLine = $lines[$m].Trim()
+                        $rawMLine = Remove-PlSqlBlockComment -Line $rawMLine -InBlockComment ([ref]$inBlockComment)
+                        if ($rawMLine.Trim() -eq '') { $m++; continue }
+                        $nextMLine = Remove-PlSqlInlineComment -Line $rawMLine
                         if ($nextMLine -match '(?i)^(IF|ELSIF|LOOP|WHILE|EXCEPTION|RETURN|DECLARE)\b' -or
                             ($nextMLine -match '(?i)^FOR\b' -and $nextMLine -notmatch '(?i)^FOR\s+UPDATE\b') -or
                             ($nextMLine -match '(?i)^ELSE\s*$' -and $innerCaseNestLevel -le 0) -or
@@ -610,7 +613,10 @@ function Invoke-PlSqlParser {
             while (-not $staticSql.TrimEnd().EndsWith(';') -and ($i + 1) -lt $lines.Count) {
                 $i++
                 $lineNum = $i + 1
-                $nextLine = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
+                $rawNextLine = $lines[$i].Trim()
+                $rawNextLine = Remove-PlSqlBlockComment -Line $rawNextLine -InBlockComment ([ref]$inBlockComment)
+                if ($rawNextLine.Trim() -eq '') { continue }
+                $nextLine = Remove-PlSqlInlineComment -Line $rawNextLine
 
                 # PL/SQL制御構文に到達したら終了
                 # CASE式内の ELSE はネストレベルが1以上の場合はスキップ
