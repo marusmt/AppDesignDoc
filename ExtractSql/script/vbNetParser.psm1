@@ -29,7 +29,7 @@ function Invoke-VbNetParser {
         [string]$FilePath,
 
         [Parameter()]
-        [string]$Encoding = 'UTF8',
+        [string]$Encoding = 'Default',
 
         [Parameter()]
         [string]$LogFile = ''

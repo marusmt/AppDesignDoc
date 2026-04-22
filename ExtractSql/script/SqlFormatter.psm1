@@ -230,7 +230,7 @@ function Export-SqlFiles {
         [string]$OutputDir,
 
         [Parameter()]
-        [string]$Encoding = 'UTF8',
+        [string]$Encoding = 'Default',
 
         [Parameter()]
         [ValidateSet('PerSql', 'PerSource')]

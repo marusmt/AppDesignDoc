@@ -12,7 +12,10 @@
 .PARAMETER Language
     言語指定: "plsql" | "vbnet" | "auto"（省略時: auto）
 .PARAMETER Encoding
-    文字コード（省略時: UTF8）
+    文字コード（省略時: Default）
+    Windows PowerShell 5.1 では Default = システム ANSI コードページ（日本語 Windows では CP932/Shift-JIS）
+    PowerShell 7+ では Default = UTF-8
+    UTF-8 ファイルを処理する場合は -Encoding UTF8 を明示指定してください
 .PARAMETER OutputFormat
     出力形式: "PerSql"（SQL毎に個別ファイル、省略時）| "PerSource"（ソースファイル単位で1ファイル）
 .EXAMPLE
@@ -38,7 +41,7 @@ param(
     [string]$Language = 'auto',
 
     [Parameter()]
-    [string]$Encoding = 'UTF8',
+    [string]$Encoding = 'Default',
 
     [Parameter()]
     [ValidateSet('PerSql', 'PerSource')]
