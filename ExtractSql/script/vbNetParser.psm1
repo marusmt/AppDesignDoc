@@ -312,7 +312,13 @@ function Invoke-VbNetParser {
                     # $ifLinesForExpand から変数名を推定して新しい $sbVars エントリを作成する。
                     $inferredVarName = $null
                     foreach ($ifln in $ifLinesForExpand) {
+                        # "varName.Append(...)" 形式
                         if ($ifln -match '(?i)^\s*(\w+)\.Append(?:Line)?\s*\(') {
+                            $inferredVarName = $Matches[1]
+                            break
+                        }
+                        # "With varName" 形式（With ブロック内の .Append を含むケース）
+                        if ($ifln -match '(?i)^\s*With\s+(\w+)\s*$') {
                             $inferredVarName = $Matches[1]
                             break
                         }
