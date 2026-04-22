@@ -110,7 +110,7 @@ function Invoke-VbNetParser {
                     if ($varInfo.Fragments.Count -gt 0) {
                         $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray()
                         $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
-                        if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                        if ($mergedSql -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                             $stmt = New-SqlStatement
                             $stmt.Sql = $mergedSql
                             $stmt.Type = Get-SqlType -SqlText $mergedSql
@@ -128,7 +128,7 @@ function Invoke-VbNetParser {
                     if ($sbInfo.Fragments.Count -gt 0) {
                         $mergedSql = Merge-DynamicSql -Fragments $sbInfo.Fragments.ToArray()
                         $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
-                        if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                        if ($mergedSql -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                             $stmt = New-SqlStatement
                             $stmt.Sql = $mergedSql
                             $stmt.Type = Get-SqlType -SqlText $mergedSql
@@ -164,7 +164,7 @@ function Invoke-VbNetParser {
                 if ($varInfo.Fragments.Count -gt 0) {
                     $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray()
                     $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
-                    if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                    if ($mergedSql -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                         $stmt = New-SqlStatement
                         $stmt.Sql = $mergedSql
                         $stmt.Type = Get-SqlType -SqlText $mergedSql
@@ -183,7 +183,7 @@ function Invoke-VbNetParser {
                     $mergedSql = Merge-DynamicSql -Fragments $sbInfo.Fragments.ToArray()
                     $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
                     # プレースホルダ /*:...*/ が先頭に来る場合も考慮してSQLキーワードを検出
-                    if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                    if ($mergedSql -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                         $stmt = New-SqlStatement
                         $stmt.Sql = $mergedSql
                         $stmt.Type = Get-SqlType -SqlText $mergedSql
@@ -307,7 +307,37 @@ function Invoke-VbNetParser {
                     }
                 }
                 else {
-                    Write-Log -Level WARN -Message "Line ${lineNum}: If分岐の断片を関連付けるSQL変数が見つかりません" -LogFile $LogFile
+                    # $lastFragmentsList が null のケース:
+                    # IF 分岐のみで構成されるヘルパーメソッドなど、直前に .Append がない場合。
+                    # $ifLinesForExpand から変数名を推定して新しい $sbVars エントリを作成する。
+                    $inferredVarName = $null
+                    foreach ($ifln in $ifLinesForExpand) {
+                        if ($ifln -match '(?i)^\s*(\w+)\.Append(?:Line)?\s*\(') {
+                            $inferredVarName = $Matches[1]
+                            break
+                        }
+                    }
+                    if ($inferredVarName) {
+                        if (-not $sbVars.ContainsKey($inferredVarName)) {
+                            $sbVars[$inferredVarName] = @{
+                                Fragments  = [System.Collections.Generic.List[string]]::new()
+                                StartLine  = $lineNum
+                                EndLine    = $lineNum
+                                MethodName = $currentMethodName
+                            }
+                        }
+                        foreach ($fragment in $branchResults) {
+                            $sbVars[$inferredVarName].Fragments.Add($fragment)
+                        }
+                        $endLineNum = if ($j -lt $originalLineNumbers.Count) { $originalLineNumbers[$j] } else { $originalLineNumbers[$originalLineNumbers.Count - 1] }
+                        $sbVars[$inferredVarName].EndLine = $endLineNum
+                        $lastFragmentsList = $sbVars[$inferredVarName].Fragments
+                        $lastVarName = $inferredVarName
+                        $lastVarSource = $sbVars
+                    }
+                    else {
+                        Write-Log -Level WARN -Message "Line ${lineNum}: If分岐の断片を関連付けるSQL変数が見つかりません" -LogFile $LogFile
+                    }
                 }
             }
 
@@ -328,7 +358,7 @@ function Invoke-VbNetParser {
                     $prevInfo = $sbVars[$sbRefName]
                     $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
                     $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
-                    if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                    if ($prevMerged -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                         $prevStmt = New-SqlStatement
                         $prevStmt.Sql = $prevMerged
                         $prevStmt.Type = Get-SqlType -SqlText $prevMerged
@@ -395,7 +425,7 @@ function Invoke-VbNetParser {
                 if ($prevInfo.Fragments.Count -gt 0) {
                     $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
                     $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
-                    if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                    if ($prevMerged -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                         $prevStmt = New-SqlStatement
                         $prevStmt.Sql = $prevMerged
                         $prevStmt.Type = Get-SqlType -SqlText $prevMerged
@@ -444,7 +474,7 @@ function Invoke-VbNetParser {
                 if ($prevInfo.Fragments.Count -gt 0) {
                     $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
                     $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
-                    if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                    if ($prevMerged -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                         $prevStmt = New-SqlStatement
                         $prevStmt.Sql = $prevMerged
                         $prevStmt.Type = Get-SqlType -SqlText $prevMerged
@@ -489,7 +519,7 @@ function Invoke-VbNetParser {
                 $prevInfo = $sbVars[$sbVarName]
                 $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
                 $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
-                if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                if ($prevMerged -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                     $prevStmt = New-SqlStatement
                     $prevStmt.Sql = $prevMerged
                     $prevStmt.Type = Get-SqlType -SqlText $prevMerged
@@ -519,7 +549,7 @@ function Invoke-VbNetParser {
                 $prevInfo = $sbVars[$sbVarName]
                 $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
                 $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
-                if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                if ($prevMerged -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                     $prevStmt = New-SqlStatement
                     $prevStmt.Sql = $prevMerged
                     $prevStmt.Type = Get-SqlType -SqlText $prevMerged
@@ -547,7 +577,7 @@ function Invoke-VbNetParser {
                 $prevInfo = $sbVars[$sbVarName]
                 $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
                 $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
-                if ($prevMerged -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                if ($prevMerged -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                     $prevStmt = New-SqlStatement
                     $prevStmt.Sql = $prevMerged
                     $prevStmt.Type = Get-SqlType -SqlText $prevMerged
@@ -709,7 +739,7 @@ function Invoke-VbNetParser {
             $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
 
             # プレースホルダ /*:...*/ が先頭に来る場合も考慮してSQLキーワードを検出
-            if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+            if ($mergedSql -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                 $stmt = New-SqlStatement
                 $stmt.Sql = $mergedSql
                 $stmt.Type = Get-SqlType -SqlText $mergedSql
@@ -734,7 +764,7 @@ function Invoke-VbNetParser {
             $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'vbnet'
 
             # プレースホルダ /*:...*/ が先頭に来る場合も考慮してSQLキーワードを検出
-            if ($mergedSql -match '(?i)^\s*(?:/\*:.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+            if ($mergedSql -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
                 $stmt = New-SqlStatement
                 $stmt.Sql = $mergedSql
                 $stmt.Type = Get-SqlType -SqlText $mergedSql
