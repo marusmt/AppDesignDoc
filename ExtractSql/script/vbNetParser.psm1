@@ -215,28 +215,29 @@ function Invoke-VbNetParser {
 
             for ($j = $i; $j -lt $lines.Count; $j++) {
                 $ifLine = $lines[$j].Trim()
-                # インラインコメント除去後の行をネスト追跡に使用（例: If cond Then 'comment）
-                $ifLineNoComment = Remove-VbNetInlineComment -Line $ifLine
 
                 # メソッド境界（End Sub/Function）でスキャンを停止
                 # 越えると$jが配列外になりEndLine=0になるのを防ぐ
-                if ($ifLineNoComment -match '(?i)^End\s+(Sub|Function)\b') {
+                if ($ifLine -match '(?i)^End\s+(Sub|Function)\b') {
                     if ($j -gt $i) { $j-- }
                     break
                 }
 
-                # 空行はスキップ（Expand-IfBranchesのMandatory[string[]]パラメータが空文字列を拒否するため）
+                # 空行はスキップ（Remove-VbNetInlineCommentは空文字列を受け付けないため、
+                # 空行チェックの後でインラインコメント除去を行う）
                 if ($ifLine -ne '') {
                     $ifLines.Add($lines[$j])
-                }
+                    # インラインコメント除去後の行をネスト追跡に使用（例: If cond Then 'comment）
+                    $ifLineNoComment = Remove-VbNetInlineComment -Line $ifLine
 
-                if ($ifLineNoComment -match '(?i)^\s*If\s+.+\s+Then\s*$') {
-                    $ifNestLevel++
-                }
-                if ($ifLineNoComment -match '(?i)^\s*End\s+If') {
-                    $ifNestLevel--
-                    if ($ifNestLevel -eq 0) {
-                        break
+                    if ($ifLineNoComment -match '(?i)^\s*If\s+.+\s+Then\s*$') {
+                        $ifNestLevel++
+                    }
+                    if ($ifLineNoComment -match '(?i)^\s*End\s+If') {
+                        $ifNestLevel--
+                        if ($ifNestLevel -eq 0) {
+                            break
+                        }
                     }
                 }
             }
