@@ -194,7 +194,7 @@ function Get-SqlType {
     )
 
     # プレースホルダ /*:...*/ が先頭に来る場合は除去してからキーワード判定
-    $trimmed = ($SqlText.TrimStart() -replace '^(?:/\*:.*?\*/\s*)+', '').TrimStart()
+    $trimmed = ($SqlText.TrimStart() -replace '^(?:/\*.*?\*/\s*)+', '').TrimStart()
 
     switch -Regex ($trimmed) {
         '^(?i)SELECT'  { return 'SELECT' }
