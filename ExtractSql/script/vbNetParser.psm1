@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     VB.NETソースコードからSQL文を抽出するパーサーモジュール

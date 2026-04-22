@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     PL/SQLソースコードからSQL文を抽出するパーサーモジュール

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     SQL整形・プレースホルダ変換・ファイル出力モジュール
