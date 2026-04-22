@@ -296,53 +296,137 @@ function Invoke-VbNetParser {
             }
 
             if ($branchResults.Count -gt 0) {
-                # 直前に操作した動的SQL変数/SBの Fragments リストに直接追加する
-                if ($lastFragmentsList) {
-                    foreach ($fragment in $branchResults) {
-                        $lastFragmentsList.Add($fragment)
+                $endLineNum = if ($j -lt $originalLineNumbers.Count) { $originalLineNumbers[$j] } else { $originalLineNumbers[$originalLineNumbers.Count - 1] }
+
+                # $$SQL_RESET:varName$$ センチネルの有無を確認
+                # センチネルは Expand-IfBranches が sb = New StringBuilder を検出した境界を示す
+                $hasResetSentinel = $branchResults | Where-Object { $_ -match '^\$\$SQL_RESET:' }
+
+                if ($hasResetSentinel) {
+                    # ------------------------------------------------
+                    # センチネルあり: IF 内で sb = New StringBuilder が複数回実行されるケース
+                    # $branchResults をセンチネル境界で分割し、各セグメントを個別 SQL として処理する
+                    # ------------------------------------------------
+                    $segments = [System.Collections.Generic.List[hashtable]]::new()
+                    $segFragments = [System.Collections.Generic.List[string]]::new()
+                    $segVarName   = $null  # null = センチネル前（RESETなし）
+
+                    foreach ($br in $branchResults) {
+                        if ($br -match '^\$\$SQL_RESET:(\w+)\$\$$') {
+                            # 前セグメントを保存
+                            $segments.Add(@{ VarName = $segVarName; Fragments = $segFragments.ToArray() })
+                            $segVarName   = $Matches[1]
+                            $segFragments = [System.Collections.Generic.List[string]]::new()
+                        } else {
+                            $segFragments.Add($br)
+                        }
                     }
-                    if ($lastVarName -and $lastVarSource -and $lastVarSource.ContainsKey($lastVarName)) {
-                        $endLineNum = if ($j -lt $originalLineNumbers.Count) { $originalLineNumbers[$j] } else { $originalLineNumbers[$originalLineNumbers.Count - 1] }
-                        $lastVarSource[$lastVarName].EndLine = $endLineNum
+                    $segments.Add(@{ VarName = $segVarName; Fragments = $segFragments.ToArray() })
+
+                    for ($si = 0; $si -lt $segments.Count; $si++) {
+                        $seg     = $segments[$si]
+                        $segVar  = $seg.VarName
+                        $segFrag = $seg.Fragments
+                        $isLast  = ($si -eq $segments.Count - 1)
+
+                        if ($null -eq $segVar) {
+                            # センチネル前: 既存 $lastFragmentsList があれば追加（通常は分岐コメントのみ）
+                            if ($lastFragmentsList -and $segFrag.Count -gt 0) {
+                                foreach ($fr in $segFrag) { $lastFragmentsList.Add($fr) }
+                                if ($lastVarName -and $lastVarSource -and $lastVarSource.ContainsKey($lastVarName)) {
+                                    $lastVarSource[$lastVarName].EndLine = $endLineNum
+                                }
+                            }
+                            continue
+                        }
+
+                        # RESET 後セグメント: 前の同名変数があれば即時確定して出力する
+                        if ($sbVars.ContainsKey($segVar) -and $sbVars[$segVar].Fragments.Count -gt 0) {
+                            $prevInfo   = $sbVars[$segVar]
+                            $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
+                            $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'vbnet'
+                            if ($prevMerged -match '(?i)^\s*(?:/\*.*?\*/\s*)*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b') {
+                                $prevStmt            = New-SqlStatement
+                                $prevStmt.Sql        = $prevMerged
+                                $prevStmt.Type       = Get-SqlType -SqlText $prevMerged
+                                $prevStmt.Category   = 'Dynamic'
+                                $prevStmt.StartLine  = $prevInfo.StartLine
+                                $prevStmt.EndLine    = $endLineNum
+                                $prevStmt.SourceFile = $fileName
+                                $prevStmt.MethodName = $prevInfo.MethodName
+                                $sqlStatements.Add($prevStmt)
+                            }
+                            $sbVars.Remove($segVar)
+                        }
+
+                        # 断片がある場合のみ新しい $sbVars エントリを作成
+                        if ($segFrag.Count -gt 0) {
+                            $sbVars[$segVar] = @{
+                                Fragments  = [System.Collections.Generic.List[string]]::new()
+                                StartLine  = $lineNum
+                                EndLine    = $endLineNum
+                                MethodName = $currentMethodName
+                            }
+                            foreach ($fr in $segFrag) { $sbVars[$segVar].Fragments.Add($fr) }
+                        }
+
+                        # 最後のセグメントを $lastFragmentsList に設定
+                        if ($isLast -and $sbVars.ContainsKey($segVar)) {
+                            $lastFragmentsList = $sbVars[$segVar].Fragments
+                            $lastVarName       = $segVar
+                            $lastVarSource     = $sbVars
+                        }
                     }
                 }
                 else {
-                    # $lastFragmentsList が null のケース:
-                    # IF 分岐のみで構成されるヘルパーメソッドなど、直前に .Append がない場合。
-                    # $ifLinesForExpand から変数名を推定して新しい $sbVars エントリを作成する。
-                    $inferredVarName = $null
-                    foreach ($ifln in $ifLinesForExpand) {
-                        # "varName.Append(...)" 形式
-                        if ($ifln -match '(?i)^\s*(\w+)\.Append(?:Line)?\s*\(') {
-                            $inferredVarName = $Matches[1]
-                            break
-                        }
-                        # "With varName" 形式（With ブロック内の .Append を含むケース）
-                        if ($ifln -match '(?i)^\s*With\s+(\w+)\s*$') {
-                            $inferredVarName = $Matches[1]
-                            break
-                        }
-                    }
-                    if ($inferredVarName) {
-                        if (-not $sbVars.ContainsKey($inferredVarName)) {
-                            $sbVars[$inferredVarName] = @{
-                                Fragments  = [System.Collections.Generic.List[string]]::new()
-                                StartLine  = $lineNum
-                                EndLine    = $lineNum
-                                MethodName = $currentMethodName
-                            }
-                        }
+                    # ------------------------------------------------
+                    # センチネルなし: 従来の処理
+                    # ------------------------------------------------
+                    if ($lastFragmentsList) {
                         foreach ($fragment in $branchResults) {
-                            $sbVars[$inferredVarName].Fragments.Add($fragment)
+                            $lastFragmentsList.Add($fragment)
                         }
-                        $endLineNum = if ($j -lt $originalLineNumbers.Count) { $originalLineNumbers[$j] } else { $originalLineNumbers[$originalLineNumbers.Count - 1] }
-                        $sbVars[$inferredVarName].EndLine = $endLineNum
-                        $lastFragmentsList = $sbVars[$inferredVarName].Fragments
-                        $lastVarName = $inferredVarName
-                        $lastVarSource = $sbVars
+                        if ($lastVarName -and $lastVarSource -and $lastVarSource.ContainsKey($lastVarName)) {
+                            $lastVarSource[$lastVarName].EndLine = $endLineNum
+                        }
                     }
                     else {
-                        Write-Log -Level WARN -Message "Line ${lineNum}: If分岐の断片を関連付けるSQL変数が見つかりません" -LogFile $LogFile
+                        # $lastFragmentsList が null のケース:
+                        # IF 分岐のみで構成されるヘルパーメソッドなど、直前に .Append がない場合。
+                        # $ifLinesForExpand から変数名を推定して新しい $sbVars エントリを作成する。
+                        $inferredVarName = $null
+                        foreach ($ifln in $ifLinesForExpand) {
+                            # "varName.Append(...)" 形式
+                            if ($ifln -match '(?i)^\s*(\w+)\.Append(?:Line)?\s*\(') {
+                                $inferredVarName = $Matches[1]
+                                break
+                            }
+                            # "With varName" 形式（With ブロック内の .Append を含むケース）
+                            if ($ifln -match '(?i)^\s*With\s+(\w+)\s*$') {
+                                $inferredVarName = $Matches[1]
+                                break
+                            }
+                        }
+                        if ($inferredVarName) {
+                            if (-not $sbVars.ContainsKey($inferredVarName)) {
+                                $sbVars[$inferredVarName] = @{
+                                    Fragments  = [System.Collections.Generic.List[string]]::new()
+                                    StartLine  = $lineNum
+                                    EndLine    = $lineNum
+                                    MethodName = $currentMethodName
+                                }
+                            }
+                            foreach ($fragment in $branchResults) {
+                                $sbVars[$inferredVarName].Fragments.Add($fragment)
+                            }
+                            $sbVars[$inferredVarName].EndLine = $endLineNum
+                            $lastFragmentsList = $sbVars[$inferredVarName].Fragments
+                            $lastVarName = $inferredVarName
+                            $lastVarSource = $sbVars
+                        }
+                        else {
+                            Write-Log -Level WARN -Message "Line ${lineNum}: If分岐の断片を関連付けるSQL変数が見つかりません" -LogFile $LogFile
+                        }
                     }
                 }
             }

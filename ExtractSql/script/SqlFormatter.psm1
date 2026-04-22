@@ -451,6 +451,11 @@ function Expand-IfBranches {
 
         # 分岐内のSQL断片を抽出
         if ($inBranch -or $nestLevel -gt 0) {
+            # VB.NET: sb = New StringBuilder → SQL の区切りをセンチネルで通知
+            if ($Language -eq 'vbnet' -and $line -match '(?i)^\s*(\w+)\s*=\s*New\s+(?:System\.Text\.)?StringBuilder\b') {
+                $result.Add('$$SQL_RESET:' + $Matches[1] + '$$')
+                continue
+            }
             $sqlFragment = & $ExtractSqlFromLine $line
             if ($sqlFragment) {
                 if ($pendingBranchComment) {
