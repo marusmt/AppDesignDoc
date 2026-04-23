@@ -2691,7 +2691,16 @@ function ConvertFrom-OracleSqlFile {
     $extractCount = 0
 
     foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
-        $extracted = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $parseContent -OperationType $opType -AdditionalCteNames $AdditionalCteNames -PlSqlDeclaredNames $plsqlDeclNames)
+        try {
+            $extracted = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $parseContent -OperationType $opType -AdditionalCteNames $AdditionalCteNames -PlSqlDeclaredNames $plsqlDeclNames)
+        }
+        catch {
+            $snippet = if ($parseContent.Length -gt 100) { $parseContent.Substring(0, 100) + "..." } else { $parseContent }
+            Write-Warning "[Oracle] 解析エラー詳細: $fileName | 操作=$opType | $($_.Exception.Message)"
+            Write-Warning "[Oracle] SQL断片(先頭): $snippet"
+            Write-Warning "[Oracle] スタック: $($_.ScriptStackTrace)"
+            $extracted = @()
+        }
         $extractCount += $extracted.Count
 
         foreach ($item in $extracted) {
@@ -2711,7 +2720,16 @@ function ConvertFrom-OracleSqlFile {
 
     foreach ($dynSql in $dynamicSqlFragments) {
         foreach ($opType in @("INSERT", "SELECT", "UPDATE", "DELETE", "MERGE")) {
-            $extracted = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $dynSql -OperationType $opType -AdditionalCteNames $AdditionalCteNames -PlSqlDeclaredNames $plsqlDeclNames)
+            try {
+                $extracted = Normalize-CrudRowList (Get-TableAndColumns -SqlFragment $dynSql -OperationType $opType -AdditionalCteNames $AdditionalCteNames -PlSqlDeclaredNames $plsqlDeclNames)
+            }
+            catch {
+                $snippet = if ($dynSql.Length -gt 100) { $dynSql.Substring(0, 100) + "..." } else { $dynSql }
+                Write-Warning "[Oracle] 解析エラー詳細: $fileName | 操作=$opType (EXECUTE IMMEDIATE) | $($_.Exception.Message)"
+                Write-Warning "[Oracle] SQL断片(先頭): $snippet"
+                Write-Warning "[Oracle] スタック: $($_.ScriptStackTrace)"
+                $extracted = @()
+            }
             $extractCount += $extracted.Count
 
             foreach ($item in $extracted) {
@@ -2837,6 +2855,7 @@ function ConvertFrom-OracleSqlDirectory {
         }
         catch {
             Write-Warning "[Oracle] 解析エラー: $($file.FullName) - $($_.Exception.Message)"
+            Write-Warning "[Oracle] スタック: $($_.ScriptStackTrace)"
         }
     }
 
