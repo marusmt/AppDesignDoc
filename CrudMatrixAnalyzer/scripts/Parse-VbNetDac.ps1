@@ -165,11 +165,12 @@ function ConvertFrom-VbNetDacFile {
     param(
         [string]$FilePath,
         [System.Collections.Generic.HashSet[string]]$GlobalCteNames = $null,
-        [string[]]$KnownCteNames = @()
+        [string[]]$KnownCteNames = @(),
+        [string]$SourceEncoding = "auto"
     )
 
     Assert-SqlParserLoaded
-    $content = [System.IO.File]::ReadAllText($FilePath, [System.Text.UTF8Encoding]::new($false))
+    $content = Read-SqlFileAutoEncoding -Path $FilePath -Encoding $SourceEncoding
     $fileName = [System.IO.Path]::GetFileName($FilePath)
     $fileBaseName = [System.IO.Path]::GetFileNameWithoutExtension($FilePath)
     $classInfo = Get-VbNetClassAndMethods -Content $content
@@ -240,7 +241,8 @@ function ConvertFrom-VbNetDacDirectory {
         [string[]]$ExcludePatterns = @(),
         [string[]]$ExcludeTables = @(),
         [string[]]$ExcludeSchemas = @(),
-        [string[]]$KnownCteNames = @()
+        [string[]]$KnownCteNames = @(),
+        [string]$SourceEncoding = "auto"
     )
 
     Write-Host "[VB.NET] 解析開始: $SourcePath" -ForegroundColor Cyan
@@ -255,7 +257,7 @@ function ConvertFrom-VbNetDacDirectory {
     $globalCteNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($file in $files) {
         try {
-            $fileContent = [System.IO.File]::ReadAllText($file.FullName, [System.Text.UTF8Encoding]::new($false))
+            $fileContent = Read-SqlFileAutoEncoding -Path $file.FullName -Encoding $SourceEncoding
             $literals = [regex]::Matches($fileContent, '"([^"]*)"')
             $literalText = ($literals | ForEach-Object { $_.Groups[1].Value }) -join " "
             if ($literalText -match '(?i)\bWITH\b') {
@@ -278,7 +280,7 @@ function ConvertFrom-VbNetDacDirectory {
         Write-Progress -Activity "VB.NET DAC 解析中" -Status "$fileCount / $($files.Count): $($file.Name)" -PercentComplete (($fileCount / $files.Count) * 100)
 
         try {
-            $fileResults = ConvertFrom-VbNetDacFile -FilePath $file.FullName -GlobalCteNames $globalCteNames -KnownCteNames $KnownCteNames
+            $fileResults = ConvertFrom-VbNetDacFile -FilePath $file.FullName -GlobalCteNames $globalCteNames -KnownCteNames $KnownCteNames -SourceEncoding $SourceEncoding
 
             foreach ($result in $fileResults) {
                 $skip = $false

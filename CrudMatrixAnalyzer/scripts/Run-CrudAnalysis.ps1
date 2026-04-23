@@ -129,6 +129,7 @@ if (-not $SkipOracle) {
             ExcludeTables    = $config.ExcludeTables
             ExcludeSchemas   = $config.ExcludeSchemas
             AdditionalCteNames = $oracleKnownCte
+            SourceEncoding   = if ($null -ne $config.Oracle.SourceEncoding) { $config.Oracle.SourceEncoding } else { "auto" }
         }
         if ($DebugOracle) { $oracleParams.DebugLog = $true }
         elseif ($null -ne $config.Oracle.DebugLog -and $config.Oracle.DebugLog -eq $true) { $oracleParams.DebugLog = $true }
@@ -159,7 +160,8 @@ if (-not $SkipVbNet) {
             -ExcludePatterns $config.VbNet.ExcludePatterns `
             -ExcludeTables $config.ExcludeTables `
             -ExcludeSchemas $config.ExcludeSchemas `
-            -KnownCteNames $oracleKnownCte
+            -KnownCteNames $oracleKnownCte `
+            -SourceEncoding (if ($null -ne $config.VbNet.SourceEncoding) { $config.VbNet.SourceEncoding } else { "auto" })
 
         foreach ($r in $vbnetResults) {
             [void]$allResults.Add($r)
@@ -185,7 +187,8 @@ if (-not $SkipDdl) {
                 -SourcePath $config.Ddl.TableSourcePath `
                 -FilePattern $config.Ddl.FilePattern `
                 -ExcludePatterns $config.Ddl.ExcludePatterns `
-                -ExcludeTables $config.ExcludeTables
+                -ExcludeTables $config.ExcludeTables `
+                -SourceEncoding (if ($null -ne $config.Ddl.SourceEncoding) { $config.Ddl.SourceEncoding } else { "auto" })
 
             foreach ($def in $ddlResult.TableDefinitions) {
                 [void]$tableDefs.Add($def)
@@ -206,7 +209,8 @@ if (-not $SkipDdl) {
                 -SourcePath $config.Ddl.IndexSourcePath `
                 -FilePattern $config.Ddl.FilePattern `
                 -ExcludePatterns $config.Ddl.ExcludePatterns `
-                -ExcludeTables $config.ExcludeTables
+                -ExcludeTables $config.ExcludeTables `
+                -SourceEncoding (if ($null -ne $config.Ddl.SourceEncoding) { $config.Ddl.SourceEncoding } else { "auto" })
 
             foreach ($def in $idxResult.IndexDefinitions) {
                 [void]$indexDefs.Add($def)

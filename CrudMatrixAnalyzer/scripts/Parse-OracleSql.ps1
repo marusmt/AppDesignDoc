@@ -20,16 +20,24 @@
 $script:CrudParseProfileStats = $null
 
 function Read-SqlFileAutoEncoding {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [string]$Encoding = "auto"
+    )
     $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $encLower = ($Encoding -or "auto").Trim().ToLower()
+    if ($encLower -ne "auto") {
+        $encName = if ($encLower -in @("shift_jis", "shift-jis", "sjis", "shiftjis")) { "shift_jis" } else { $encLower }
+        return [System.Text.Encoding]::GetEncoding($encName).GetString($bytes)
+    }
     # BOM付きUTF-8を検出
     if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
         return [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
     }
     # BOMなし: まずUTF-8(不正バイト例外あり)で試みる
     try {
-        $enc = New-Object System.Text.UTF8Encoding($false, $true)
-        return $enc.GetString($bytes)
+        $utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
+        return $utf8Strict.GetString($bytes)
     }
     catch {
         # UTF-8不正 → Shift-JISにフォールバック
@@ -2679,10 +2687,11 @@ function ConvertFrom-OracleSqlFile {
     param(
         [string]$FilePath,
         [string[]]$AdditionalCteNames = @(),
+        [string]$SourceEncoding = "auto",
         [switch]$DebugLog
     )
 
-    $rawContent = Read-SqlFileAutoEncoding -Path $FilePath
+    $rawContent = Read-SqlFileAutoEncoding -Path $FilePath -Encoding $SourceEncoding
     $contentNoComments = Remove-SqlComments -Content $rawContent
     $content = Mask-OracleSqlStringLiteralsForParse -Content $contentNoComments
     $fileName = [System.IO.Path]::GetFileName($FilePath)
@@ -2784,6 +2793,7 @@ function ConvertFrom-OracleSqlDirectory {
         [string[]]$ExcludeTables = @(),
         [string[]]$ExcludeSchemas = @(),
         [string[]]$AdditionalCteNames = @(),
+        [string]$SourceEncoding = "auto",
         [switch]$DebugLog
     )
 
@@ -2808,7 +2818,7 @@ function ConvertFrom-OracleSqlDirectory {
         Write-Progress -Activity "Oracle SQL 解析中" -Status "$fileCount / $($files.Count): $($file.Name)" -PercentComplete (($fileCount / $files.Count) * 100)
 
         try {
-            $fileResults = ConvertFrom-OracleSqlFile -FilePath $file.FullName -AdditionalCteNames $AdditionalCteNames -DebugLog:$DebugLog
+            $fileResults = ConvertFrom-OracleSqlFile -FilePath $file.FullName -AdditionalCteNames $AdditionalCteNames -SourceEncoding $SourceEncoding -DebugLog:$DebugLog
 
             if ($DebugLog -and $fileResults.Count -gt 0) {
                 $byFeature = $fileResults | Group-Object FeatureName

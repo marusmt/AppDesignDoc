@@ -9,14 +9,22 @@
 #>
 
 function Read-SqlFileAutoEncoding {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [string]$Encoding = "auto"
+    )
     $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $encLower = ($Encoding -or "auto").Trim().ToLower()
+    if ($encLower -ne "auto") {
+        $encName = if ($encLower -in @("shift_jis", "shift-jis", "sjis", "shiftjis")) { "shift_jis" } else { $encLower }
+        return [System.Text.Encoding]::GetEncoding($encName).GetString($bytes)
+    }
     if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
         return [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
     }
     try {
-        $enc = New-Object System.Text.UTF8Encoding($false, $true)
-        return $enc.GetString($bytes)
+        $utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
+        return $utf8Strict.GetString($bytes)
     }
     catch {
         return [System.Text.Encoding]::GetEncoding('shift_jis').GetString($bytes)
@@ -396,7 +404,8 @@ function Parse-TableDdlDirectory {
         [string]$SourcePath,
         [string]$FilePattern = "*.sql",
         [string[]]$ExcludePatterns = @(),
-        [string[]]$ExcludeTables = @()
+        [string[]]$ExcludeTables = @(),
+        [string]$SourceEncoding = "auto"
     )
 
     Write-Host "[DDL] テーブル定義解析開始: $SourcePath" -ForegroundColor Cyan
@@ -419,7 +428,7 @@ function Parse-TableDdlDirectory {
         Write-Progress -Activity "DDL 解析中" -Status "$fileCount / $($files.Count): $($file.Name)" -PercentComplete (($fileCount / $files.Count) * 100)
 
         try {
-            $content = Read-SqlFileAutoEncoding -Path $file.FullName
+            $content = Read-SqlFileAutoEncoding -Path $file.FullName -Encoding $SourceEncoding
 
             $cstmt = Parse-OracleCommentStatements -Content $content
             foreach ($k in $cstmt.TableComments.Keys) { $globalTableComments[$k] = $cstmt.TableComments[$k] }
