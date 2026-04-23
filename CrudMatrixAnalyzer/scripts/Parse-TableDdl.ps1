@@ -14,7 +14,7 @@ function Read-SqlFileAutoEncoding {
         [string]$Encoding = "auto"
     )
     $bytes = [System.IO.File]::ReadAllBytes($Path)
-    $encLower = ($Encoding -or "auto").Trim().ToLower()
+    $encLower = if ([string]::IsNullOrWhiteSpace($Encoding)) { "auto" } else { $Encoding.Trim().ToLower() }
     if ($encLower -ne "auto") {
         $encName = if ($encLower -in @("shift_jis", "shift-jis", "sjis", "shiftjis")) { "shift_jis" } else { $encLower }
         return [System.Text.Encoding]::GetEncoding($encName).GetString($bytes)
