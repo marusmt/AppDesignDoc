@@ -2503,13 +2503,13 @@ function Get-MergeCrudRowsDetailed {
             }
             else {
                 if ($u -match '(?is)^(?:([\w$]+)\.)?([\w$]+)(?:\s+(?:AS\s+)?([\w$]+))?\s*$') {
-                    $usingPhys = $Matches[2].Value.ToUpper()
+                    $usingPhys = ([string]$Matches[2]).ToUpper()
                     if ($CteNames.Count -eq 0 -or -not $CteNames.Contains($usingPhys)) {
                         if (-not $mergeAliasToPhysical.ContainsKey($usingPhys)) {
                             $mergeAliasToPhysical[$usingPhys] = $usingPhys
                         }
-                        if ($Matches[3].Success -and $Matches[3].Value -ne '') {
-                            $usal = $Matches[3].Value.ToUpper()
+                        if ($Matches.ContainsKey(3) -and [string]$Matches[3] -ne '') {
+                            $usal = ([string]$Matches[3]).ToUpper()
                             if ($usal -ne 'AS') {
                                 $mergeAliasToPhysical[$usal] = $usingPhys
                             }
