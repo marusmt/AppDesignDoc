@@ -30,11 +30,25 @@ function Read-SqlFileAutoEncoding {
         $encLower = ([string]$Encoding).Trim().ToLower()
     }
     if ($encLower -ne "auto") {
+        # UTF-16 LE 明示指定（BOM付きの場合はBOMをスキップ）
+        if ($encLower -in @("utf-16", "utf-16le", "utf_16", "utf_16le", "unicode")) {
+            $start = 0
+            if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $start = 2 }
+            return [System.Text.Encoding]::Unicode.GetString($bytes, $start, $bytes.Length - $start)
+        }
         $encName = "shift_jis"
         if ($encLower -notin @("shift_jis", "shift-jis", "sjis", "shiftjis")) { $encName = $encLower }
         return [System.Text.Encoding]::GetEncoding($encName).GetString($bytes)
     }
-    # BOM付きUTF-8を検出
+    # UTF-16 LE BOM (FF FE)
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        return [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+    # UTF-16 BE BOM (FE FF)
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+    # BOM付きUTF-8を検出 (EF BB BF)
     if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
         return [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
     }
