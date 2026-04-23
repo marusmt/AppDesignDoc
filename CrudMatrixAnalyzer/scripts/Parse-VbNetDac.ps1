@@ -31,7 +31,7 @@ function Get-VbNetSqlStrings {
     $sqlStrings = [System.Collections.ArrayList]::new()
 
     # パターン1: 単一行の文字列リテラル（SQL キーワードを含むもの）
-    $singleLinePattern = '"([^"]*(?:SELECT|INSERT|UPDATE|DELETE|MERGE)[^"]*)"'
+    $singleLinePattern = '"([^\r\n"]*(?:SELECT|INSERT|UPDATE|DELETE|MERGE)[^\r\n"]*)"'
     $singleMatches = [regex]::Matches($Content, $singleLinePattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 
     foreach ($match in $singleMatches) {
@@ -40,11 +40,11 @@ function Get-VbNetSqlStrings {
     }
 
     # パターン2: 文字列連結（& または +）で複数行にまたがるSQL
-    $concatPattern = '(?i)(?:Dim|Const)\s+\w+\s+As\s+String\s*=\s*"([^"]*)"(?:\s*(?:&|_\s*\r?\n\s*&?|\+)\s*"([^"]*)")*'
+    $concatPattern = '(?i)(?:Dim|Const)\s+\w+\s+As\s+String\s*=\s*"([^\r\n"]*)"(?:\s*(?:&|_\s*\r?\n\s*&?|\+)\s*"([^\r\n"]*)")*'
     $concatMatches = [regex]::Matches($Content, $concatPattern)
 
     foreach ($match in $concatMatches) {
-        $segments = [regex]::Matches($match.Value, '"([^"]*)"')
+        $segments = [regex]::Matches($match.Value, '"([^\r\n"]*)"')
         if ($segments.Count -le 1) { continue }
         $fullSql = ($segments | ForEach-Object { $_.Groups[1].Value }) -join " "
         if ($fullSql -match '(?i)(SELECT|INSERT|UPDATE|DELETE|MERGE)') {
@@ -58,7 +58,7 @@ function Get-VbNetSqlStrings {
 
     foreach ($sbMatch in $sbMatches) {
         $sbVarName = $sbMatch.Groups[1].Value
-        $appendPattern = "(?i)$([regex]::Escape($sbVarName))\.(?:Append|AppendLine|AppendFormat)\s*\(\s*""([^""]*)""\s*\)"
+        $appendPattern = "(?i)$([regex]::Escape($sbVarName))\.(?:Append|AppendLine|AppendFormat)\s*\(\s*""([^\r\n""]*)""\s*\)"
         $appendMatches = [regex]::Matches($Content, $appendPattern)
         $fullSql = ""
         foreach ($appendMatch in $appendMatches) {
@@ -75,7 +75,7 @@ function Get-VbNetSqlStrings {
     $withMatches = [regex]::Matches($Content, $withPattern)
     foreach ($wm in $withMatches) {
         $body = $wm.Groups[2].Value
-        $appendInWith = [regex]::Matches($body, '(?i)\.(?:Append|AppendLine|AppendFormat)\s*\(\s*"([^"]*)"\s*\)')
+        $appendInWith = [regex]::Matches($body, '(?i)\.(?:Append|AppendLine|AppendFormat)\s*\(\s*"([^\r\n"]*)"\s*\)')
         $parts = @()
         foreach ($am in $appendInWith) {
             $parts += $am.Groups[1].Value
@@ -87,7 +87,7 @@ function Get-VbNetSqlStrings {
     }
 
     # パターン3c: .Append(BuildWithCteBlock("...")) のように文字列リテラル以外を渡す Append（CTE 断片を合成して抽出）
-    $buildCteBlockPattern = '(?i)\.(?:Append|AppendLine|AppendFormat)\s*\(\s*BuildWithCteBlock\s*\(\s*"([^"]*)"\s*\)\s*\)'
+    $buildCteBlockPattern = '(?i)\.(?:Append|AppendLine|AppendFormat)\s*\(\s*BuildWithCteBlock\s*\(\s*"([^\r\n"]*)"\s*\)\s*\)'
     foreach ($m in [regex]::Matches($Content, $buildCteBlockPattern)) {
         $inner = $m.Groups[1].Value
         $synthetic = "WITH T AS ( " + $inner + ") "
@@ -97,7 +97,7 @@ function Get-VbNetSqlStrings {
     }
 
     # パターン4: VB.NET の行継続文字（ _）を使った複数行文字列
-    $lineContinuation = '(?i)"([^"]*)"[\s]*_\s*\r?\n\s*(?:&\s*)?"([^"]*)"'
+    $lineContinuation = '(?i)"([^\r\n"]*)"[\s]*_\s*\r?\n\s*(?:&\s*)?"([^\r\n"]*)"'
     $lcMatches = [regex]::Matches($Content, $lineContinuation)
     foreach ($match in $lcMatches) {
         $combined = $match.Groups[1].Value + " " + $match.Groups[2].Value
@@ -177,7 +177,7 @@ function ConvertFrom-VbNetDacFile {
     $results = [System.Collections.ArrayList]::new()
 
     $fileCteNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $allLiterals = [regex]::Matches($content, '"([^"]*)"')
+    $allLiterals = [regex]::Matches($content, '"([^\r\n"]*)"')
     $allLiteralText = ($allLiterals | ForEach-Object { $_.Groups[1].Value }) -join " "
     if ($allLiteralText -match '(?i)\bWITH\b') {
         $cteFound = [regex]::Matches($allLiteralText, '(?i)([\w$]+)\s+AS\s*\(')

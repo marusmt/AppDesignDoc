@@ -8,6 +8,21 @@
     解析結果は SELECT * 展開やCRUDマトリックスの補完に利用する
 #>
 
+function Read-SqlFileAutoEncoding {
+    param([string]$Path)
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        return [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+    }
+    try {
+        $enc = New-Object System.Text.UTF8Encoding($false, $true)
+        return $enc.GetString($bytes)
+    }
+    catch {
+        return [System.Text.Encoding]::GetEncoding('shift_jis').GetString($bytes)
+    }
+}
+
 function Remove-SqlCommentsForDdl {
     param([string]$Content)
 
@@ -404,7 +419,7 @@ function Parse-TableDdlDirectory {
         Write-Progress -Activity "DDL 解析中" -Status "$fileCount / $($files.Count): $($file.Name)" -PercentComplete (($fileCount / $files.Count) * 100)
 
         try {
-            $content = Get-Content $file.FullName -Raw -Encoding Default
+            $content = Read-SqlFileAutoEncoding -Path $file.FullName
 
             $cstmt = Parse-OracleCommentStatements -Content $content
             foreach ($k in $cstmt.TableComments.Keys) { $globalTableComments[$k] = $cstmt.TableComments[$k] }

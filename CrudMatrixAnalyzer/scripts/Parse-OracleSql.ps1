@@ -19,6 +19,24 @@
 
 $script:CrudParseProfileStats = $null
 
+function Read-SqlFileAutoEncoding {
+    param([string]$Path)
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    # BOM付きUTF-8を検出
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        return [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+    }
+    # BOMなし: まずUTF-8(不正バイト例外あり)で試みる
+    try {
+        $enc = New-Object System.Text.UTF8Encoding($false, $true)
+        return $enc.GetString($bytes)
+    }
+    catch {
+        # UTF-8不正 → Shift-JISにフォールバック
+        return [System.Text.Encoding]::GetEncoding('shift_jis').GetString($bytes)
+    }
+}
+
 function Reset-CrudParseProfileStats {
     if ($env:CRUD_MATRIX_PARSE_PROFILE -ne '1') { return }
     $script:CrudParseProfileStats = @{
@@ -308,7 +326,7 @@ function Get-DeleteCrudRows {
 
     $out = [System.Collections.ArrayList]::new()
 
-    $pattern = '(?i)\bDELETE\b\s+(?:FROM\s+)?(?:([\w$]+)\.)?([\w$]+)(?:\s+(?!WHERE\b)([\w$]+))?'
+    $pattern = '(?i)\bDELETE\b\s+(?:FROM\s+)?(?!FROM\b)(?:([\w$]+)\.)?(?!(?:FROM|WHERE|SELECT|INSERT|UPDATE|DELETE|MERGE|SET|ON|INTO|JOIN)\b)([\w$]+)(?:\s+(?!WHERE\b)([\w$]+))?'
     foreach ($match in [regex]::Matches($SqlFragment, $pattern)) {
         $tableName = $match.Groups[2].Value.ToUpper()
         if ($tableName -eq '') { continue }
@@ -2664,7 +2682,7 @@ function ConvertFrom-OracleSqlFile {
         [switch]$DebugLog
     )
 
-    $rawContent = Get-Content $FilePath -Raw -Encoding Default
+    $rawContent = Read-SqlFileAutoEncoding -Path $FilePath
     $contentNoComments = Remove-SqlComments -Content $rawContent
     $content = Mask-OracleSqlStringLiteralsForParse -Content $contentNoComments
     $fileName = [System.IO.Path]::GetFileName($FilePath)
