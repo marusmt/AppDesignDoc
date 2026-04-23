@@ -62,8 +62,9 @@
         # 除外パターン
         ExcludePatterns  = @("*.Designer.vb", "*AssemblyInfo*", "*.g.vb")
 
-        # ファイルの文字コード: "auto" / "utf-8" / "shift_jis"（VB.NET は UTF-8 が多い）
-        SourceEncoding   = "utf-8"
+        # ファイルの文字コード: "auto" / "utf-8" / "utf-16" / "shift_jis"
+        # Visual Studio で作成した VB.NET ファイルは UTF-16 LE の場合がある
+        SourceEncoding   = "utf-16"
     }
 
     # --- 出力設定 ---

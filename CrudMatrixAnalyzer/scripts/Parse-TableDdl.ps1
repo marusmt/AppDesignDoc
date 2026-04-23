@@ -19,9 +19,20 @@ function Read-SqlFileAutoEncoding {
         $encLower = ([string]$Encoding).Trim().ToLower()
     }
     if ($encLower -ne "auto") {
+        if ($encLower -in @("utf-16", "utf-16le", "utf_16", "utf_16le", "unicode")) {
+            $start = 0
+            if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) { $start = 2 }
+            return [System.Text.Encoding]::Unicode.GetString($bytes, $start, $bytes.Length - $start)
+        }
         $encName = "shift_jis"
         if ($encLower -notin @("shift_jis", "shift-jis", "sjis", "shiftjis")) { $encName = $encLower }
         return [System.Text.Encoding]::GetEncoding($encName).GetString($bytes)
+    }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        return [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2)
     }
     if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
         return [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
@@ -55,7 +66,7 @@ function Parse-OracleCommentStatements {
     $tableComments = @{}
     $columnComments = @{}
 
-    $patternTable = '(?is)COMMENT\s+ON\s+TABLE\s+(?:(\w+)\.)?(\w+)\s+IS\s*''((?:[^'']|'')*?)''\s*;'
+    $patternTable = '(?is)COMMENT\s+ON\s+TABLE\s+(?:(\w+)\.)?(\w+)\s+IS\s*''((?:[^'']|'')*?)''\s*;?'
     foreach ($m in [regex]::Matches($Content, $patternTable)) {
         $schema = if ($m.Groups[1].Success) { $m.Groups[1].Value.ToUpper() } else { "" }
         $tbl = $m.Groups[2].Value.ToUpper()
@@ -64,7 +75,7 @@ function Parse-OracleCommentStatements {
         $tableComments[$key] = $txt
     }
 
-    $patternCol = '(?is)COMMENT\s+ON\s+COLUMN\s+(?:(\w+)\.)?(\w+)\.(\w+)\s+IS\s*''((?:[^'']|'')*?)''\s*;'
+    $patternCol = '(?is)COMMENT\s+ON\s+COLUMN\s+(?:(\w+)\.)?(\w+)\.(\w+)\s+IS\s*''((?:[^'']|'')*?)''\s*;?'
     foreach ($m in [regex]::Matches($Content, $patternCol)) {
         $schema = if ($m.Groups[1].Success) { $m.Groups[1].Value.ToUpper() } else { "" }
         $tbl = $m.Groups[2].Value.ToUpper()
