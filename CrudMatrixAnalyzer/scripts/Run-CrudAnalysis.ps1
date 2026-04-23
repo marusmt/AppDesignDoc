@@ -161,7 +161,7 @@ if (-not $SkipVbNet) {
             -ExcludeTables $config.ExcludeTables `
             -ExcludeSchemas $config.ExcludeSchemas `
             -KnownCteNames $oracleKnownCte `
-            -SourceEncoding (if ($null -ne $config.VbNet.SourceEncoding) { $config.VbNet.SourceEncoding } else { "auto" })
+            -SourceEncoding $(if ($null -ne $config.VbNet.SourceEncoding) { $config.VbNet.SourceEncoding } else { "auto" })
 
         foreach ($r in $vbnetResults) {
             [void]$allResults.Add($r)
@@ -188,7 +188,7 @@ if (-not $SkipDdl) {
                 -FilePattern $config.Ddl.FilePattern `
                 -ExcludePatterns $config.Ddl.ExcludePatterns `
                 -ExcludeTables $config.ExcludeTables `
-                -SourceEncoding (if ($null -ne $config.Ddl.SourceEncoding) { $config.Ddl.SourceEncoding } else { "auto" })
+                -SourceEncoding $(if ($null -ne $config.Ddl.SourceEncoding) { $config.Ddl.SourceEncoding } else { "auto" })
 
             foreach ($def in $ddlResult.TableDefinitions) {
                 [void]$tableDefs.Add($def)
@@ -210,7 +210,7 @@ if (-not $SkipDdl) {
                 -FilePattern $config.Ddl.FilePattern `
                 -ExcludePatterns $config.Ddl.ExcludePatterns `
                 -ExcludeTables $config.ExcludeTables `
-                -SourceEncoding (if ($null -ne $config.Ddl.SourceEncoding) { $config.Ddl.SourceEncoding } else { "auto" })
+                -SourceEncoding $(if ($null -ne $config.Ddl.SourceEncoding) { $config.Ddl.SourceEncoding } else { "auto" })
 
             foreach ($def in $idxResult.IndexDefinitions) {
                 [void]$indexDefs.Add($def)
