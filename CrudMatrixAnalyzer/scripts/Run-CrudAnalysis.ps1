@@ -112,6 +112,20 @@ if ($null -ne $config.Oracle.KnownCteNames -and $config.Oracle.KnownCteNames.Cou
     $oracleKnownCte = @($config.Oracle.KnownCteNames)
 }
 
+# 文字コード設定（未設定時は "auto"）
+$oracleEncoding = "auto"
+if ($null -ne $config.Oracle.SourceEncoding -and -not [string]::IsNullOrWhiteSpace([string]$config.Oracle.SourceEncoding)) {
+    $oracleEncoding = [string]$config.Oracle.SourceEncoding
+}
+$ddlEncoding = "auto"
+if ($null -ne $config.Ddl.SourceEncoding -and -not [string]::IsNullOrWhiteSpace([string]$config.Ddl.SourceEncoding)) {
+    $ddlEncoding = [string]$config.Ddl.SourceEncoding
+}
+$vbnetEncoding = "auto"
+if ($null -ne $config.VbNet.SourceEncoding -and -not [string]::IsNullOrWhiteSpace([string]$config.VbNet.SourceEncoding)) {
+    $vbnetEncoding = [string]$config.VbNet.SourceEncoding
+}
+
 # --- Oracle SQL 解析 ---
 if (-not $SkipOracle) {
     Write-Host ""
@@ -129,7 +143,7 @@ if (-not $SkipOracle) {
             ExcludeTables    = $config.ExcludeTables
             ExcludeSchemas   = $config.ExcludeSchemas
             AdditionalCteNames = $oracleKnownCte
-            SourceEncoding   = if ($null -ne $config.Oracle.SourceEncoding) { $config.Oracle.SourceEncoding } else { "auto" }
+            SourceEncoding   = $oracleEncoding
         }
         if ($DebugOracle) { $oracleParams.DebugLog = $true }
         elseif ($null -ne $config.Oracle.DebugLog -and $config.Oracle.DebugLog -eq $true) { $oracleParams.DebugLog = $true }
@@ -161,7 +175,7 @@ if (-not $SkipVbNet) {
             -ExcludeTables $config.ExcludeTables `
             -ExcludeSchemas $config.ExcludeSchemas `
             -KnownCteNames $oracleKnownCte `
-            -SourceEncoding $(if ($null -ne $config.VbNet.SourceEncoding) { $config.VbNet.SourceEncoding } else { "auto" })
+            -SourceEncoding $vbnetEncoding
 
         foreach ($r in $vbnetResults) {
             [void]$allResults.Add($r)
@@ -188,7 +202,7 @@ if (-not $SkipDdl) {
                 -FilePattern $config.Ddl.FilePattern `
                 -ExcludePatterns $config.Ddl.ExcludePatterns `
                 -ExcludeTables $config.ExcludeTables `
-                -SourceEncoding $(if ($null -ne $config.Ddl.SourceEncoding) { $config.Ddl.SourceEncoding } else { "auto" })
+                -SourceEncoding $ddlEncoding
 
             foreach ($def in $ddlResult.TableDefinitions) {
                 [void]$tableDefs.Add($def)
@@ -210,7 +224,7 @@ if (-not $SkipDdl) {
                 -FilePattern $config.Ddl.FilePattern `
                 -ExcludePatterns $config.Ddl.ExcludePatterns `
                 -ExcludeTables $config.ExcludeTables `
-                -SourceEncoding $(if ($null -ne $config.Ddl.SourceEncoding) { $config.Ddl.SourceEncoding } else { "auto" })
+                -SourceEncoding $ddlEncoding
 
             foreach ($def in $idxResult.IndexDefinitions) {
                 [void]$indexDefs.Add($def)

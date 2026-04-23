@@ -25,9 +25,13 @@ function Read-SqlFileAutoEncoding {
         [string]$Encoding = "auto"
     )
     $bytes = [System.IO.File]::ReadAllBytes($Path)
-    $encLower = if ([string]::IsNullOrWhiteSpace($Encoding)) { "auto" } else { $Encoding.Trim().ToLower() }
+    $encLower = "auto"
+    if (-not [string]::IsNullOrWhiteSpace([string]$Encoding)) {
+        $encLower = ([string]$Encoding).Trim().ToLower()
+    }
     if ($encLower -ne "auto") {
-        $encName = if ($encLower -in @("shift_jis", "shift-jis", "sjis", "shiftjis")) { "shift_jis" } else { $encLower }
+        $encName = "shift_jis"
+        if ($encLower -notin @("shift_jis", "shift-jis", "sjis", "shiftjis")) { $encName = $encLower }
         return [System.Text.Encoding]::GetEncoding($encName).GetString($bytes)
     }
     # BOM付きUTF-8を検出
