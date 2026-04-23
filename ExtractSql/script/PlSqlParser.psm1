@@ -147,7 +147,9 @@ function Invoke-PlSqlParser {
     $fileName = [System.IO.Path]::GetFileName($FilePath)
     Write-Log -Level INFO -Message "Processing: $fileName (PL/SQL)" -LogFile $LogFile
 
-    $lines = Get-Content -Path $FilePath -Encoding $Encoding
+    $detectedEncoding = Get-FileEncoding -FilePath $FilePath -FallbackEncoding $Encoding
+    Write-Log -Level INFO -Message "  Encoding: $detectedEncoding (fallback: $Encoding)" -LogFile $LogFile
+    $lines = Get-Content -Path $FilePath -Encoding $detectedEncoding
     $sqlStatements = [System.Collections.Generic.List[object]]::new()
 
     $state = [PlSqlParserState]::Normal
@@ -227,6 +229,12 @@ function Invoke-PlSqlParser {
                     if ($ifNestLevel -eq 0) {
                         break
                     }
+                }
+                # PROCEDURE/FUNCTION/PACKAGE 境界に達したらスキャンを停止
+                # （END IF なしの不正なIFブロックが次のオブジェクト定義を飲み込まないようにする）
+                if ($j -gt $i -and $ifLine -match '(?i)^\s*(PROCEDURE|FUNCTION|PACKAGE)\b') {
+                    $j--  # この行を外側ループで再処理させる
+                    break
                 }
             }
             # END IFが見つからずループが完了した場合、$jは$lines.Countになる（配列範囲外）
@@ -532,27 +540,52 @@ function Invoke-PlSqlParser {
 
         # ================================================
         # CURSOR宣言内のSELECT文
-        # CURSOR name IS [sql] または CURSOR name IS（次行以降にSQLが続く場合も対応）
+        # CURSOR name [(params)] IS [sql]
+        # 引数あり/なし・IS が同一行/次行のケースに対応
         # ================================================
-        if ($trimmed -match '(?i)^CURSOR\s+(\w+)\s+IS\b') {
+        if ($trimmed -match '(?i)^CURSOR\s+(\w+)') {
             $startLine = $lineNum
             $cursorName = $Matches[1]
+            $cursorSql = ''
+            $foundIs = $false
 
-            # IS の後にSQLが続く場合
-            if ($trimmed -match '(?i)^CURSOR\s+\w+\s+IS\s+(.+)') {
+            # 同一行に IS がある場合: CURSOR name IS ... / CURSOR name(params) IS ...
+            if ($trimmed -match '(?i)\bIS\s+(.+)$') {
                 $cursorSql = Remove-PlSqlInlineComment -Line $Matches[1]
+                $foundIs = $true
             }
-            else {
-                # IS が行末にある場合は次行からSQLを収集
+            elseif ($trimmed -match '(?i)\bIS\s*$') {
+                $foundIs = $true
                 if (($i + 1) -lt $lines.Count) {
                     $i++
                     $lineNum = $i + 1
                     $cursorSql = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
                 }
-                else {
-                    continue
+                else { continue }
+            }
+            else {
+                # IS が次行以降にある場合（引数リストが複数行にわたるケース）
+                $lookIdx = $i + 1
+                while ($lookIdx -lt $lines.Count) {
+                    $lookLine = $lines[$lookIdx].Trim()
+                    if ($lookLine -match '(?i)^(BEGIN|FUNCTION|PROCEDURE|END|DECLARE)\b') { break }
+                    if ($lookLine -match '(?i)^IS\s+(.+)$') {
+                        $cursorSql = Remove-PlSqlInlineComment -Line $Matches[1]
+                        $i = $lookIdx; $lineNum = $i + 1; $foundIs = $true; break
+                    }
+                    elseif ($lookLine -match '(?i)^IS\s*$') {
+                        $i = $lookIdx; $lineNum = $i + 1; $foundIs = $true
+                        if (($i + 1) -lt $lines.Count) {
+                            $i++; $lineNum = $i + 1
+                            $cursorSql = Remove-PlSqlInlineComment -Line $lines[$i].Trim()
+                        }
+                        break
+                    }
+                    $lookIdx++
                 }
             }
+
+            if (-not $foundIs) { continue }
 
             # 複数行にまたがる場合
             while (-not $cursorSql.TrimEnd().EndsWith(';') -and ($i + 1) -lt $lines.Count) {

@@ -319,6 +319,44 @@ function Export-SqlFiles {
 }
 
 # ============================================================
+# Get-FileEncoding: BOMによるファイルエンコーディング自動検出
+# BOMが検出された場合はそのエンコーディングを返す。
+# BOMがない場合は FallbackEncoding を返す。
+# ============================================================
+function Get-FileEncoding {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+
+        [Parameter()]
+        [string]$FallbackEncoding = 'Default'
+    )
+
+    $bom = New-Object byte[] 4
+    $stream = [System.IO.File]::OpenRead($FilePath)
+    try {
+        $read = $stream.Read($bom, 0, 4)
+    }
+    finally {
+        $stream.Close()
+    }
+
+    if ($read -ge 3 -and $bom[0] -eq 0xEF -and $bom[1] -eq 0xBB -and $bom[2] -eq 0xBF) {
+        return 'UTF8'             # UTF-8 with BOM
+    }
+    elseif ($read -ge 2 -and $bom[0] -eq 0xFF -and $bom[1] -eq 0xFE) {
+        return 'Unicode'          # UTF-16 LE
+    }
+    elseif ($read -ge 2 -and $bom[0] -eq 0xFE -and $bom[1] -eq 0xFF) {
+        return 'BigEndianUnicode' # UTF-16 BE
+    }
+    else {
+        return $FallbackEncoding  # BOMなし → フォールバック
+    }
+}
+
+# ============================================================
 # Write-Log: ログ出力
 # ============================================================
 function Write-Log {
@@ -481,6 +519,7 @@ Export-ModuleMember -Function @(
     'Format-SqlStatement',
     'Get-SqlType',
     'Export-SqlFiles',
+    'Get-FileEncoding',
     'Write-Log',
     'Expand-IfBranches'
 )
