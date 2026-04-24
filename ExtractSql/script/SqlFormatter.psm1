@@ -42,10 +42,24 @@ function Merge-DynamicSql {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string[]]$Fragments
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string[]]$Fragments,
+
+        [Parameter()]
+        [string]$VarName = '',
+
+        [Parameter()]
+        [string]$LogFile = ''
     )
 
-    $merged = ($Fragments -join '') -replace '\s+', ' '
+    $valid = @($Fragments | Where-Object { $_ -ne $null -and $_ -ne '' })
+    if ($valid.Count -eq 0) {
+        $hint = if ($VarName) { " (変数: $VarName)" } else { '' }
+        Write-Log -Level WARN -Message "Merge-DynamicSql: 有効なフラグメントがありません$hint。空のSQL断片をスキップします" -LogFile $LogFile
+        return ''
+    }
+    $merged = ($valid -join '') -replace '\s+', ' '
     return $merged.Trim()
 }
 

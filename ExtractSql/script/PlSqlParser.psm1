@@ -496,16 +496,18 @@ function Invoke-PlSqlParser {
                     # 同名変数に既存の断片がある場合は先に確定させる（複数プロシージャで同名変数が使われる場合の対応）
                     if ($dynamicSqlVars.ContainsKey($varName) -and $dynamicSqlVars[$varName].Fragments.Count -gt 0) {
                         $prevInfo = $dynamicSqlVars[$varName]
-                        $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray()
-                        $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'plsql'
-                        $prevStmt = New-SqlStatement
-                        $prevStmt.Sql = $prevMerged
-                        $prevStmt.Type = Get-SqlType -SqlText $prevMerged
-                        $prevStmt.Category = 'Dynamic'
-                        $prevStmt.StartLine = $prevInfo.StartLine
-                        $prevStmt.EndLine = $lineNum - 1
-                        $prevStmt.SourceFile = $fileName
-                        $sqlStatements.Add($prevStmt)
+                        $prevMerged = Merge-DynamicSql -Fragments $prevInfo.Fragments.ToArray() -VarName $varName -LogFile $LogFile
+                        if ($prevMerged) {
+                            $prevMerged = Convert-ToPlaceholder -SqlText $prevMerged -Language 'plsql'
+                            $prevStmt = New-SqlStatement
+                            $prevStmt.Sql = $prevMerged
+                            $prevStmt.Type = Get-SqlType -SqlText $prevMerged
+                            $prevStmt.Category = 'Dynamic'
+                            $prevStmt.StartLine = $prevInfo.StartLine
+                            $prevStmt.EndLine = $lineNum - 1
+                            $prevStmt.SourceFile = $fileName
+                            $sqlStatements.Add($prevStmt)
+                        }
                     }
                     # 新規代入
                     $dynamicSqlVars[$varName] = @{
@@ -521,18 +523,20 @@ function Invoke-PlSqlParser {
                         ($assignExpr -match "(?i)^$varName\s*\|\|" -and
                          $sqlPart -and
                          ($sqlPart -replace '/\*:[^*]+\*/', '').Trim() -match '(?i)^\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|CREATE|ALTER|DROP)\b')) {
-                    # 追記代入
-                    if (-not $dynamicSqlVars.ContainsKey($varName)) {
-                        $dynamicSqlVars[$varName] = @{
-                            Fragments = [System.Collections.Generic.List[string]]::new()
-                            StartLine = $lineNum
-                            EndLine   = $lineNum
+                    # 追記代入（空文字クリア操作 v_sql := '' は追加しない）
+                    if ($sqlPart) {
+                        if (-not $dynamicSqlVars.ContainsKey($varName)) {
+                            $dynamicSqlVars[$varName] = @{
+                                Fragments = [System.Collections.Generic.List[string]]::new()
+                                StartLine = $lineNum
+                                EndLine   = $lineNum
+                            }
                         }
+                        $dynamicSqlVars[$varName].Fragments.Add($sqlPart)
+                        $dynamicSqlVars[$varName].EndLine = $lineNum
+                        $lastFragmentsList = $dynamicSqlVars[$varName].Fragments
+                        $lastVarName = $varName
                     }
-                    $dynamicSqlVars[$varName].Fragments.Add($sqlPart)
-                    $dynamicSqlVars[$varName].EndLine = $lineNum
-                    $lastFragmentsList = $dynamicSqlVars[$varName].Fragments
-                    $lastVarName = $varName
                 }
             }
             continue
@@ -692,18 +696,21 @@ function Invoke-PlSqlParser {
     foreach ($varEntry in $dynamicSqlVars.GetEnumerator()) {
         $varInfo = $varEntry.Value
         if ($varInfo.Fragments.Count -gt 0) {
+            $varName = $varEntry.Key
             # Fragments には本文 + IF分岐断片が既に含まれている
-            $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray()
-            $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'plsql'
+            $mergedSql = Merge-DynamicSql -Fragments $varInfo.Fragments.ToArray() -VarName $varName -LogFile $LogFile
+            if ($mergedSql) {
+                $mergedSql = Convert-ToPlaceholder -SqlText $mergedSql -Language 'plsql'
 
-            $stmt = New-SqlStatement
-            $stmt.Sql = $mergedSql
-            $stmt.Type = Get-SqlType -SqlText $mergedSql
-            $stmt.Category = 'Dynamic'
-            $stmt.StartLine = $varInfo.StartLine
-            $stmt.EndLine = $varInfo.EndLine
-            $stmt.SourceFile = $fileName
-            $sqlStatements.Add($stmt)
+                $stmt = New-SqlStatement
+                $stmt.Sql = $mergedSql
+                $stmt.Type = Get-SqlType -SqlText $mergedSql
+                $stmt.Category = 'Dynamic'
+                $stmt.StartLine = $varInfo.StartLine
+                $stmt.EndLine = $varInfo.EndLine
+                $stmt.SourceFile = $fileName
+                $sqlStatements.Add($stmt)
+            }
         }
     }
 
